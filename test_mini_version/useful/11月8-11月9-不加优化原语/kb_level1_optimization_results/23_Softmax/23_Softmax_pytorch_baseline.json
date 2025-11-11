@@ -1,0 +1,4 @@
+{
+  "problem_name": "23_Softmax",
+  "pytorch_baseline_ms": 15.184117431640624
+}

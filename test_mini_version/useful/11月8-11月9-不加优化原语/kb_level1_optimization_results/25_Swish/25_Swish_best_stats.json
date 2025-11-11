@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_25_Swish",
+  "baseline_ms": 18.45338134765625,
+  "best_cuda_ms": 7.562649536132812,
+  "speedup": 2.4400682934584923,
+  "last_updated_round": 9
+}

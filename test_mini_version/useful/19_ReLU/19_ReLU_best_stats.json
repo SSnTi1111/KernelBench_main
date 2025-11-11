@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_19_ReLU",
+  "baseline_ms": 7.441305541992188,
+  "best_cuda_ms": 7.377305603027343,
+  "speedup": 1.0086752457345107,
+  "last_updated_round": 1
+}

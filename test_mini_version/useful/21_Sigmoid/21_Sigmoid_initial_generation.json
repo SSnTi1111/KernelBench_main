@@ -1,0 +1,10 @@
+[
+  {
+    "attempt": 0,
+    "type": "generation",
+    "response": "--- C++ 签名 (`cpp`) ---\n```cpp\n#include <torch/extension.h>\n\n// C++ Wrapper 函数声明 (签名)\ntorch::Tensor kb_21_Sigmoid_wrapper(torch::Tensor arg0);\n```\n\n--- C++/CUDA 组合实现 (`cu`) ---\n\n```cu\n#include <torch/extension.h>\n#include <cuda_runtime.h>\n#include <cuda.h>\n#include <cmath>\n#include <vector>\n#include <ATen/cuda/CUDAContext.h>\n\n// Sigmoid CUDA 内核实现\n__global__ void sigmoid_kernel(const float* input, float* output, int64_t num_elements) {\n    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    \n    if (idx < num_elements) {\n        float val = input[idx];\n        // Sigmoid 函数: 1 / (1 + exp(-x))\n        output[idx] = 1.0f / (1.0f + expf(-val));\n    }\n}\n\n// C++ Wrapper 实现\ntorch::Tensor kb_21_Sigmoid_wrapper(torch::Tensor arg0) {\n    // 验证输入\n    TORCH_CHECK(arg0.is_cuda(), \"Input tensor must be on GPU\");\n    TORCH_CHECK(arg0.scalar_type() == torch::kFloat32, \"Input tensor must be float32\");\n    \n    // 分配输出张量\n    auto output = torch::empty_like(arg0);\n    \n    // 获取张量数据指针\n    const float* input_ptr = arg0.data_ptr<float>();\n    float* output_ptr = output.data_ptr<float>();\n    \n    // 计算总元素数量\n    int64_t num_elements = arg0.numel();\n    \n    // 计算网格和块维度\n    int threads_per_block = 256;\n    int blocks_per_grid = (num_elements + threads_per_block - 1) / threads_per_block;\n    \n    // 获取当前CUDA流\n    cudaStream_t stream = at::cuda::getCurrentCUDAStream();\n    \n    // 启动内核\n    sigmoid_kernel<<<blocks_per_grid, threads_per_block, 0, stream>>>(\n        input_ptr, output_ptr, num_elements\n    );\n    \n    // 检查内核执行是否成功\n    C10_CUDA_KERNEL_LAUNCH_CHECK();\n    \n    return output;\n}\n```",
+    "cpp_code_extracted": true,
+    "cuda_code_extracted": true,
+    "error": ""
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_26_GELU_",
+  "baseline_ms": 7.428075561523437,
+  "best_cuda_ms": 7.524249267578125,
+  "speedup": 0.9872181658748204,
+  "last_updated_round": 8
+}

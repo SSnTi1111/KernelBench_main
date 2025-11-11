@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_30_Softsign",
+  "baseline_ms": 25.92794677734375,
+  "best_cuda_ms": 7.474995422363281,
+  "speedup": 3.468623766614484,
+  "last_updated_round": 7
+}

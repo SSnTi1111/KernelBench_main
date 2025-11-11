@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_27_SELU_",
+  "baseline_ms": 7.440343017578125,
+  "best_cuda_ms": 2.390425682067871,
+  "speedup": 3.1125598563439767,
+  "last_updated_round": 1
+}

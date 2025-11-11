@@ -1,0 +1,86 @@
+{
+  "21_Sigmoid": {
+    "baseline_ms": 7.433215942382812,
+    "best_cuda_ms": 7.960063934326172,
+    "speedup": 0.9338135979446807,
+    "status": "Success"
+  },
+  "22_Tanh": {
+    "baseline_ms": 7.43309326171875,
+    "best_cuda_ms": 10.276761627197265,
+    "speedup": 0.7232913958077224,
+    "status": "Success"
+  },
+  "23_Softmax": {
+    "baseline_ms": 15.184117431640624,
+    "best_cuda_ms": 13.086207580566406,
+    "speedup": 1.1603145783954785,
+    "status": "Success"
+  },
+  "24_LogSoftmax": {
+    "baseline_ms": 15.07135498046875,
+    "best_cuda_ms": 12.043161773681641,
+    "speedup": 1.2514450327657916,
+    "status": "Success"
+  },
+  "25_Swish": {
+    "baseline_ms": 18.45338134765625,
+    "best_cuda_ms": 7.562649536132812,
+    "speedup": 2.4400682934584923,
+    "status": "Success"
+  },
+  "26_GELU_": {
+    "baseline_ms": 7.424655151367188,
+    "best_cuda_ms": 12.04295654296875,
+    "speedup": 0.6165143189611569,
+    "status": "Success"
+  },
+  "27_SELU_": {
+    "baseline_ms": 7.438663940429688,
+    "best_cuda_ms": 9.42919692993164,
+    "speedup": 0.7888968695538334,
+    "status": "Success"
+  },
+  "28_HardSigmoid": {
+    "baseline_ms": 7.437168579101563,
+    "best_cuda_ms": 7.552204895019531,
+    "speedup": 0.9847678502481002,
+    "status": "Success"
+  },
+  "29_Softplus": {
+    "baseline_ms": 7.69460205078125,
+    "best_cuda_ms": 12.091494750976562,
+    "speedup": 0.6363648340631997,
+    "status": "Success"
+  },
+  "30_Softsign": {
+    "baseline_ms": 25.92794677734375,
+    "best_cuda_ms": 7.474995422363281,
+    "speedup": 3.468623766614484,
+    "status": "Success"
+  },
+  "31_ELU": {
+    "baseline_ms": 7.438991088867187,
+    "best_cuda_ms": 9.420390319824218,
+    "speedup": 0.7896690939878165,
+    "status": "Success"
+  },
+  "32_HardTanh": {
+    "baseline_ms": 7.437291259765625,
+    "best_cuda_ms": 8.01976318359375,
+    "speedup": 0.927370433453733,
+    "status": "Success"
+  },
+  "33_BatchNorm": {
+    "baseline_ms": 20.5536669921875,
+    "best_cuda_ms": 20.673228454589843,
+    "speedup": 0.9942166042103696,
+    "status": "Success"
+  },
+  "34_InstanceNorm": {
+    "baseline_ms": 18.580357666015626,
+    "best_cuda_ms": 14.47034912109375,
+    "speedup": 1.2840296740961574,
+    "status": "Success"
+  }
+}

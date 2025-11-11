@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_22_Tanh",
+  "baseline_ms": 7.434301147460937,
+  "best_cuda_ms": 7.541862487792969,
+  "speedup": 0.9857380931426253,
+  "last_updated_round": 9
+}

@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_34_InstanceNorm",
+  "baseline_ms": 18.580357666015626,
+  "best_cuda_ms": 14.47034912109375,
+  "speedup": 1.2840296740961574,
+  "last_updated_round": 3
+}

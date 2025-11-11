@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_29_Softplus",
+  "baseline_ms": 7.69607666015625,
+  "best_cuda_ms": 7.8171134948730465,
+  "speedup": 0.9845164286285238,
+  "last_updated_round": 10
+}

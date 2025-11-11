@@ -1,0 +1,6 @@
+"100_HingeLoss": {
+    "baseline_ms": 18.467962646484374,
+    "best_cuda_ms": 4.590284729003907,
+    "speedup": 4.023271700292092,
+    "status": "Success"
+  },

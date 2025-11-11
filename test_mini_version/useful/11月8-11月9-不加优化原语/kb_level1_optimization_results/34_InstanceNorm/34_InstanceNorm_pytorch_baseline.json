@@ -1,0 +1,4 @@
+{
+  "problem_name": "34_InstanceNorm",
+  "pytorch_baseline_ms": 18.580357666015626
+}

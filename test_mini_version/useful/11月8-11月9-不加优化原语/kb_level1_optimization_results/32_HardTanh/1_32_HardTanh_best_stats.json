@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_32_HardTanh",
+  "baseline_ms": 7.440548095703125,
+  "best_cuda_ms": 7.579341125488281,
+  "speedup": 0.981687982175863,
+  "last_updated_round": 1
+}

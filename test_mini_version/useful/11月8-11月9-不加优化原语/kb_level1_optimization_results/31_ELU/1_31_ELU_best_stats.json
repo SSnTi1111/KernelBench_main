@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_31_ELU",
+  "baseline_ms": 7.440137939453125,
+  "best_cuda_ms": 7.502848052978516,
+  "speedup": 0.9916418254664646,
+  "last_updated_round": 10
+}

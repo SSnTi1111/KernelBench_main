@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_24_LogSoftmax",
+  "baseline_ms": 15.07135498046875,
+  "best_cuda_ms": 12.043161773681641,
+  "speedup": 1.2514450327657916,
+  "last_updated_round": 7
+}

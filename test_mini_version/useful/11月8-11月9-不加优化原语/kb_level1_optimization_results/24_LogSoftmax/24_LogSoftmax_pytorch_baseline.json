@@ -1,0 +1,4 @@
+{
+  "problem_name": "24_LogSoftmax",
+  "pytorch_baseline_ms": 15.07135498046875
+}

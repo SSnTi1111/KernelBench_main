@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_21_8_HardSigmoid",
+  "baseline_ms": 7.439810791015625,
+  "best_cuda_ms": 7.538483428955078,
+  "speedup": 0.9869108105271607,
+  "last_updated_round": 10
+}
