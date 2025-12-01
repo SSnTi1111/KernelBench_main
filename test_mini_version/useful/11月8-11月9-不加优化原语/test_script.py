@@ -11,6 +11,7 @@ import importlib.util
 import traceback     
 import inspect # [!!! 新增 !!!] 用于从 .py 文件中抓取源代码
 import signal # [!!! 新增 !!!]
+import gc
 
 # --- 1. 设置项目路径 ---
 KERNELBENCH_PATH = "/home/lxt/KernelBench/KernelBench"

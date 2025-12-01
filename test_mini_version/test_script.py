@@ -11,6 +11,7 @@ import importlib.util
 import traceback     
 import inspect # [!!! 新增 !!!] 用于从 .py 文件中抓取源代码
 import signal # [!!! 新增 !!!]
+import gc
 
 # --- 1. 设置项目路径 ---
 KERNELBENCH_PATH = "/home/lxt/KernelBench/KernelBench"
@@ -468,10 +469,19 @@ def main(args):
                 
                 
                 cpp_wrapper_gpu_inputs = gpu_inputs.copy()
+                        
+                # [!!! 通用修复 !!!]
+                # 获取所有在 __init__ 中使用的参数
+                init_inputs = problem_module.get_init_inputs()
                 
-                if problem_name == "20_LeakyReLU" and hasattr(pytorch_kernel_module, 'negative_slope'):
-                    print(f"检测到 {problem_name}，添加 negative_slope={pytorch_kernel_module.negative_slope}")
-                    cpp_wrapper_gpu_inputs.append(pytorch_kernel_module.negative_slope)
+                # 过滤掉布尔值 (例如 'return_indices')，
+                # 因为它们通常控制 *输出签名* (例如，返回一个还是两个张量)，
+                # 而不是作为 *输入* 参数传递给内核。
+                runtime_init_args = [arg for arg in init_inputs if not isinstance(arg, bool)]
+                
+                if runtime_init_args:
+                    print(f"为 {problem_name} 添加 {len(runtime_init_args)} 个 __init__ 参数: {runtime_init_args}")
+                    cpp_wrapper_gpu_inputs.extend(runtime_init_args)
                 
 
 

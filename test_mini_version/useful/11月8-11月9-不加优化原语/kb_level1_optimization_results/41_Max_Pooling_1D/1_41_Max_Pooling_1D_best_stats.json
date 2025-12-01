@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_41_Max_Pooling_1D",
+  "baseline_ms": 26.8091796875,
+  "best_cuda_ms": 12.437606048583984,
+  "speedup": 2.155493555815929,
+  "last_updated_round": 7
+}

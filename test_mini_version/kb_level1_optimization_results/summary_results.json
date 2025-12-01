@@ -1,0 +1,26 @@
+{
+  "1_37_FrobeniusNorm_": {
+    "baseline_ms": 15.207711181640626,
+    "best_cuda_ms": 13.042585754394532,
+    "speedup": 1.1660043083494072,
+    "status": "Success"
+  },
+  "1_38_L1Norm_": {
+    "baseline_ms": 27.82005126953125,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed optimization loop: CUDA error: misaligned address\nSearch for `cudaErrorMisalignedAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\nCompile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.\n"
+  },
+  "1_39_L2Norm_": {
+    "baseline_ms": 17.9051318359375,
+    "best_cuda_ms": 15.315763854980469,
+    "speedup": 1.1690655461572035,
+    "status": "Success"
+  },
+  "1_42_Max_Pooling_2D": {
+    "baseline_ms": 21.88650390625,
+    "best_cuda_ms": 17.38065948486328,
+    "speedup": 1.2592447326472758,
+    "status": "Success"
+  }
+}

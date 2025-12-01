@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_38_L1Norm_",
+  "baseline_ms": 27.82005126953125,
+  "best_cuda_ms": 18.938572692871094,
+  "speedup": 1.4689624039093159,
+  "last_updated_round": 4
+}

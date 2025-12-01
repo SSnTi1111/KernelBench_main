@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_37_FrobeniusNorm_",
+  "baseline_ms": 15.207711181640626,
+  "best_cuda_ms": 13.042585754394532,
+  "speedup": 1.1660043083494072,
+  "last_updated_round": 10
+}
