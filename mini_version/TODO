@@ -1,0 +1,19 @@
+1. 对于编译错误的用例在coder agent处进行迭代修正，保证存到里面的是正确的。
+2. 用于下轮迭代的除了好的，性能变差的也要找几个分析为什么变差
+3. 在做下一步优化选择的时候，维护一张树形图，每次选最好的做基准优化的时候，向上遍历该节点一直到顶，
+用来指导是做了什么优化造成了如今高性能的结果（好的提示），同时将该节点各个子节点的信息也放里面，用来指导之前
+做了什么尝试造成了性能变慢（坏的提示）。每个节点维护优化指导信息，性能数据，做的什么优化，硬件资源信息，以及当前kernel代码。
+(已解决)4. 看看各个agent获取到的各个完整prompt是什么，检查一下有没有问题，比如planner获得的硬件资源是所有的还是相关的五个，按理
+说应该是所有的，重新分析选择优化。
+5. 历史优化信息中没有每轮的所有27个NCU数据信息以及本轮所选择的用来做优化的NCU数据信息。
+6. main.py中的summarize_history函数获取的是所有轮次的信息（而且我想要的NCU信息也没有）轮数是不是太多了，换成上面的树结构是不是会好一点（其中还要包括本轮关注的NCU的信息以及
+为什么这样优化以及做了什么优化的简要概述）
+(已解决)7. main.py中的format_metrics_for_llm函数为什么不是解析出来了27个指标啊？？？仅仅有10个，这个地方能不能动态检查NCU一共获得了哪些
+指标，把这些指标都加进去啊？因为预设的10个指标名称实际上有的在NCU解析中不存在，能不能动态解析啊，而不是把名称提前写死。具体的27个
+指标的名称应该是['DRAMFrequency', 'SMFrequency', 'ElapsedCycles', 'MemoryThroughput', 'DRAMThroughput', 'Duration', 'L1TEXCacheThroughput', 'L2CacheThroughput', 'SMActiveCycles', 'ComputeSMThroughput', 'BlockSize', 'GridSize', 'RegistersPerThread', 'SharedMemoryConfigurationSize', 'DriverSharedMemoryPerBlock', 'DynamicSharedMemoryPerBlock', 'StaticSharedMemoryPerBlock', 'Threads', 'WavesPerSM', 'BlockLimitSM', 'BlockLimitRegisters', 'BlockLimitSharedMem', 'BlockLimitWarps', 'TheoreticalActiveWarpsperSM', 'TheoreticalOccupancy', 'AchievedOccupancy', 'AchievedActiveWarpsPerSM']
+目前只能匹配到两个："DRAMThroughput": 23.36,
+  "L2CacheThroughput": 30.9
+8. 分析器只知道当前的NCU指标，可是不知道A800这些指标的理论峰值啊
+(已解决)9. 各个Agent中（尤其是前三个）应该在提示词中加上思维链解析，而不是直接返回结果，思维链解析的分析结果会更好，但是最终的结果的格式还是这样，只是强迫他进行分析再给出结果。
+10. get_diverse_champions选择多样性代码的过程，目前只是进行字符串匹配不与当前Kernel 百分百一致，我觉的这不是我理解的多样性
+而是优化手段或者指标等多样性的考量，选择多样性的往届成功用例来指导下一轮的优化。
