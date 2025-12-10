@@ -13,12 +13,12 @@ import sys
 import importlib.util 
 import traceback  
 import numpy as np  
-from typing import Dict, List # <--- [修复] 添加 List
+from typing import Dict # <--- [修复] 添加此导入
 
 # 编译后的模块的全局缓存
 _gemm_module = None
 
-# vvv --- [!!! 已更新 !!!] NCU 模板现在是通用的 --- vvv
+# vvv --- 新增：NCU 分析的目标脚本模板 (来自您的示例) --- vvv
 NCU_TARGET_SCRIPT_TEMPLATE = """
 import torch
 import importlib.util
@@ -26,11 +26,10 @@ import os
 import sys
 import traceback
 
-# 从命令行参数获取路径、模块名和 wrapper 名
+# 从命令行参数获取路径、模块名和矩阵大小
 MODULE_PATH = sys.argv[1]
 MODULE_NAME = sys.argv[2]
-WRAPPER_FUNCTION_NAME = sys.argv[3]
-# [!!! 已移除 !!!] N = int(sys.argv[3])
+N = int(sys.argv[3])
 
 try:
     # 加载由评估器编译好的 .so 模块
@@ -42,31 +41,23 @@ try:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    # [!!! 已更新 !!!] 从文件加载真实的输入数据
+    # 准备数据
     torch.cuda.set_device(0)
     device = torch.device("cuda")
+    # 使用固定的种子以确保 ncu 每次分析的数据相同
+    torch.manual_seed(42) 
+    A = torch.randn(N, N, device=device, dtype=torch.float32)
+    B = torch.randn(N, N, device=device, dtype=torch.float32)
     
-    try:
-        # 从保存的文件中加载输入
-        inputs = torch.load("_ncu_inputs.pt")
-        gpu_inputs = [t.to(device) if isinstance(t, torch.Tensor) else t for t in inputs]
-    except Exception as e:
-        print(f"Failed to load _ncu_inputs.pt: {e}", file=sys.stderr)
-        traceback.print_exc()
-        sys.exit(1)
-
     torch.cuda.synchronize(device)
     
     # --- 这是 NCU 将重点分析的目标 ---
     # 仅运行一次，不进行预热
-    
-    # [!!! 已更新 !!!] 使用 getattr 动态调用 wrapper
-    wrapper_func = getattr(module, WRAPPER_FUNCTION_NAME)
-    wrapper_func(*gpu_inputs)
+    module.gemm_cuda(A, B)
     # --- 结束分析 ---
     
     torch.cuda.synchronize(device)
-    # print("NCU target run complete.")
+    # print("NCU target run complete.") # 保持安静，避免污染stdout
 
 except Exception as e:
     print(f"NCU target script failed: {e}", file=sys.stderr)
@@ -76,10 +67,9 @@ except Exception as e:
 # ^^^ --- 模板结束 --- ^^^
 
 
-# [!!! 已更新 !!!] 接受 wrapper_function_name
-def load_gemm_module(cpp_source, cuda_source, module_name="gemm_evolved_default", wrapper_function_name="gemm_cuda"):
+def load_gemm_module(cpp_source, cuda_source, module_name="gemm_evolved_default"):
     """
-    (此函数已更新)
+    (此函数保持不变)
     使用PyTorch的JIT编译C++/CUDA源码。
     返回 (module, stdout_log, stderr_log)
     """
@@ -119,7 +109,7 @@ def load_gemm_module(cpp_source, cuda_source, module_name="gemm_evolved_default"
             name=module_name, 
             cpp_sources=cpp_source,
             cuda_sources=cuda_source,
-            functions=[wrapper_function_name], # <--- [!!! 已更新 !!!] 使用参数
+            functions=["gemm_cuda"],
             verbose=True, # <--- 关键：必须为 True 才能捕获日志
             extra_cflags=["-O3"],
             extra_cuda_cflags=cuda_flags
@@ -158,66 +148,39 @@ def load_gemm_module(cpp_source, cuda_source, module_name="gemm_evolved_default"
     _gemm_module = _module
     return _gemm_module, stdout_log, stderr_log
 
-# [!!! 已更新 !!!] 接受通用输入
-def run_gemm(inputs: List[torch.Tensor], wrapper_function_name: str):
-    """
-    (此函数已更新)
-    运行当前加载的模块。
-    """
+
+def run_gemm(A_tensor, B_tensor):
+    """(此函数保持不变)"""
     if _gemm_module is None:
         raise RuntimeError("模块未编译。请先调用 load_gemm_module()")
-    
-    # 使用 getattr 动态调用 wrapper
-    wrapper_func = getattr(_gemm_module, wrapper_function_name)
-    return wrapper_func(*inputs)
+    return _gemm_module.gemm_cuda(A_tensor, B_tensor)
 
-# [!!! 已更新 !!!] 接受通用输入和引用
-def check_correctness(inputs: List[torch.Tensor], ref_outputs: List[torch.Tensor], wrapper_function_name: str):
-    """
-    (此函数已更新)
-    检查通用内核的正确性。
-    """
+
+def check_correctness(A_torch, B_torch, C_ref_torch):
+    """(此函数保持不变)"""
     print("Running evolved kernel for correctness check...")
     try:
-        # 确保输入在 GPU 上
-        gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
-        gpu_ref_outputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in ref_outputs]
-
-        C_evolved_outputs = run_gemm(gpu_inputs, wrapper_function_name)
+        C_evolved = run_gemm(A_torch, B_torch)
         
-        # 确保 C_evolved_outputs 是一个列表，以便进行 zip
-        if not isinstance(C_evolved_outputs, (list, tuple)):
-            C_evolved_outputs = [C_evolved_outputs]
-
-        if len(C_evolved_outputs) != len(gpu_ref_outputs):
-            print(f"--- KERNEL IS INCORRECT ---")
-            print(f"Error: Output count mismatch. Expected {len(gpu_ref_outputs)}, got {len(C_evolved_outputs)}.")
+        is_correct = torch.allclose(C_evolved, C_ref_torch, atol=1e-3, rtol=1e-3)
+        if not is_correct:
+            print("--- KERNEL IS INCORRECT ---")
+            print("Baseline [0,0]:", C_ref_torch[0,0].item())
+            print("Evolved [0,0]:", C_evolved[0,0].item())
             print("---------------------------")
-            return False
-
-        is_correct = True
-        for i, (evolved_t, ref_t) in enumerate(zip(C_evolved_outputs, gpu_ref_outputs)):
-            if not torch.allclose(evolved_t, ref_t, atol=1e-2, rtol=1e-2):
-                is_correct = False
-                print(f"--- KERNEL IS INCORRECT (Output {i}) ---")
-                print("Ref [0,0]:", ref_t.flatten()[0].item())
-                print("Evolved [0,0]:", evolved_t.flatten()[0].item())
-                print("---------------------------")
-                break # 
-        
         return is_correct
 
     except Exception as e:
         print(f"--- KERNEL RUNTIME FAILED ---")
         print(e)
-        traceback.print_exc()
         print("-----------------------------")
         return False
 
-# vvv --- PTXAS 解析器 (保持不变) --- vvv
+# vvv --- 新增：PTXAS 解析器 (来自您的示例) --- vvv
 def parse_ptxas_info(log_str: str) -> Dict[str, float]:
     """
-    (此函数保持不变)
+    使用正则表达式解析 nvcc (--ptxas-options=-v) 的日志输出，
+    提取寄存器、共享内存和溢出(spill)信息。
     """
     metrics = {
         'registers_used': 0.0,
@@ -257,11 +220,10 @@ def parse_ptxas_info(log_str: str) -> Dict[str, float]:
 # ^^^ --- PTXAS 解析器结束 --- ^^^
 
 
-# vvv --- [!!! 已更新 !!!] 真实 NCU 分析器 (现在是通用的) --- vvv
-def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, wrapper_function_name: str, inputs: List[torch.Tensor]) -> Dict[str, float]:
+# vvv --- 新增：真实 NCU 分析器 (来自您的示例) --- vvv
+def get_real_ncu_metrics(module_path: str, module_name: str, matrix_n: int) -> Dict[str, float]:
     """
     动态创建一个目标脚本，运行 ncu，解析 CSV 输出，并返回指标。
-    [!!! 已更新 !!!] 接受通用输入和内核/wrapper 名称。
     """
     ncu_metrics = {}
     target_script_path = f"_ncu_target_{module_name}.py"
@@ -271,22 +233,18 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
         with open(target_script_path, "w", encoding="utf-8") as f:
             f.write(NCU_TARGET_SCRIPT_TEMPLATE)
 
-        # [!!! 已更新 !!!] 保存输入以供 ncu 脚本加载
-        torch.save(inputs, '_ncu_inputs.pt')
-
         # 2. 构建 ncu 命令 (不带 --metrics 以获取全集)
         ncu_command = [
             'ncu',
             '--csv',
-            # '--kernel-name', kernel_name, # <--- [!!! 已删除 !!!]
+            '--kernel-name', 'gemm_kernel',
             '--launch-count', '1',
             '--clock-control', 'none', # 避免 ncu 锁定频率
             'python', 
             target_script_path,
             module_path, 
             module_name, 
-            wrapper_function_name # <--- [!!! 已更新 !!!]
-            # [!!! 已移除 !!!] str(matrix_n)
+            str(matrix_n)
         ]
         
         print(f"--- [ 正在运行 NCU (全集)... ] ---")
@@ -307,7 +265,7 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
             print(f"NCU Stderr: {proc.stderr}", file=sys.stderr)
             return ncu_metrics
 
-        # 4. 解析 CSV 输出
+        # 4. 解析 CSV 输出 (来自您的示例)
         csv_reader = csv.reader(io.StringIO(proc.stdout))
         metric_name_idx = -1
         metric_value_idx = -1
@@ -324,10 +282,8 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
                 continue 
 
             if metric_name_idx != -1 and len(row) > max(metric_name_idx, metric_value_idx):
-                
-                # [!!! 已删除 !!!] 
-                # if kernel_name not in str(row):
-                #     continue
+                if "gemm_kernel" not in str(row):
+                    continue
 
                 metric_name = row[metric_name_idx].strip().strip('"')
                 val_str = row[metric_value_idx].strip().strip('"')
@@ -336,7 +292,8 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
                     continue
 
                 try:
-                    # 清理指标名称
+                    # 清理指标名称 (例如：sm__warps_active.avg -> sm__warps_active.avg)
+                    # 我们只保留点和下划线
                     cleaned_name = re.sub(r'[^a-zA-Z0-9_.]', '', metric_name)
                     
                     val_str_cleaned = val_str.replace(',', '')
@@ -348,10 +305,11 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
                     ncu_metrics[cleaned_name] = val
                 
                 except (ValueError, IndexError):
+                    # print(f"警告：解析 NCU 指标 '{metric_name}' (值: {val_str}) 失败。", file=sys.stderr)
                     pass
         
         if not ncu_metrics:
-            print(f"警告：无法从 NCU CSV 输出中解析任何 {kernel_name} 指标数据。", file=sys.stderr)
+            print("警告：无法从 NCU CSV 输出中解析任何 gemm_kernel 指标数据。", file=sys.stderr)
             # print(f"NCU STDOUT: {proc.stdout}") # 调试时取消注释
             # print(f"NCU STDERR: {proc.stderr}") # 调试时取消注释
             return ncu_metrics
@@ -369,11 +327,9 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
     finally:
         if os.path.exists(target_script_path):
             os.remove(target_script_path)
-        # [!!! 新增 !!!] 清理 ncu 输入文件
-        if os.path.exists("_ncu_inputs.pt"):
-            os.remove("_ncu_inputs.pt")
             
     print(f"--- [ NCU 指标已解析 (共 {len(ncu_metrics)} 个) ] ---")
+    # 随机打印5个指标作为示例
     if ncu_metrics:
         sample_keys = random.sample(list(ncu_metrics.keys()), min(5, len(ncu_metrics)))
         sample_metrics = {k: ncu_metrics[k] for k in sample_keys}
@@ -383,20 +339,17 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
 # ^^^ --- NCU 函数结束 --- ^^^
 
 
-# vvv --- [!!! 已更新 !!!] 真实性能评测函数 (现在是通用的) --- vvv
-def benchmark_kernel(inputs: List[torch.Tensor], wrapper_function_name: str, warmup_runs=5, benchmark_runs=10):
+# vvv --- 新增：真实性能评测函数 --- vvv
+def benchmark_kernel(A_tensor, B_tensor, warmup_runs=5, benchmark_runs=10):
     """
     对当前加载的 _gemm_module 执行预热和基准测试。
-    [!!! 已更新 !!!] 接受通用输入。
     """
     if _gemm_module is None:
         raise RuntimeError("模块未编译。")
     
-    gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
-
     print(f"Warming up evolved kernel ({warmup_runs} runs)...")
     for _ in range(warmup_runs):
-        _ = run_gemm(gpu_inputs, wrapper_function_name)
+        _ = run_gemm(A_tensor, B_tensor)
     torch.cuda.synchronize()
 
     # 测量
@@ -405,7 +358,7 @@ def benchmark_kernel(inputs: List[torch.Tensor], wrapper_function_name: str, war
     
     start.record()
     for _ in range(benchmark_runs):
-        _ = run_gemm(gpu_inputs, wrapper_function_name)
+        _ = run_gemm(A_tensor, B_tensor)
     end.record()
     
     torch.cuda.synchronize()
@@ -416,7 +369,7 @@ def benchmark_kernel(inputs: List[torch.Tensor], wrapper_function_name: str, war
 
 
 def get_pytorch_performance(A_torch, B_torch):
-    """(此函数保持不变, 仅用于原始 main() 的后向兼容)"""
+    """(此函数保持不变)"""
     print("Warming up PyTorch...")
     for _ in range(10):
         _ = torch.matmul(A_torch, B_torch)

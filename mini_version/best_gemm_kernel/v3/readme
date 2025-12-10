@@ -1,0 +1,6 @@
+# AGENT_MODELS = {
+#     "planner": "deepseek-v3.2-exp",  # 规划 Agent，用一个较快、便宜的模型
+#     "tool": "deepseek-v3.2-exp",       # 工具 Agent，用一个较快、便宜的模型
+#     "analysis": "deepseek-v3.2-exp",    # 分析 Agent，用一个更强的模型
+#     "coder": "deepseek-v3.2-exp",       # 编码 Agent，用一个最强的模型
+# }

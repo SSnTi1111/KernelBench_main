@@ -5,40 +5,24 @@ import os
 os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
 # --- General Settings ---
-# MATRIX_N = 8192 # <--- [!!! 已移除 !!!] 不再需要全局 N
-ITERATION_ROUNDS = 5  # 可外部设置的迭代轮数
+MATRIX_N = 2048
+ITERATION_ROUNDS = 30  # 可外部设置的迭代轮数
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- [!!! 已更新 !!!] ---
 # 解决问题 3: 为不同 Agent 配置不同模型
-# AGENT_MODELS = {
-#     "initial_generator": "DeepSeek-V3.1-Fast", # 建议使用最强的模型
-#     "initial_corrector": "DeepSeek-V3.1-Fast", # [!!! 新增 !!!] (建议使用您最强的模型)
-
-#     "planner": "deepseek-v3.1",  # 规划 Agent，用一个较快、便宜的模型
-#     "tool": "deepseek-v3.1",       # 工具 Agent，用一个较快、便宜的模型
-#     "analysis": "deepseek-v3.1",    # 分析 Agent，用一个更强的模型
-#     "coder": "qwen3-max-2025-10-30",       # 编码 Agent，用一个最强的模型
-#     # "coder":"gpt-5-codex-high"
-# }
 AGENT_MODELS = {
-    "initial_generator": "gpt-5", # 建议使用最强的模型
-    "initial_corrector": "grok-4-fast",
-    # "initial_corrector": "DeepSeek-V3.1-Fast", # [!!! 新增 !!!] (建议使用您最强的模型)
-    # "initial_corrector": "gpt-5", # [!!! 新增 !!!] (建议使用您最强的模型)
-
-    "planner": "grok-4-fast",  # 规划 Agent，用一个较快、便宜的模型
-    "tool": "grok-4-fast",       # 工具 Agent，用一个较快、便宜的模型
-    "analysis": "grok-4-fast",    # 分析 Agent，用一个更强的模型
+    "planner": "DeepSeek-V3.1-Fast",  # 规划 Agent，用一个较快、便宜的模型
+    "tool": "DeepSeek-V3.1-Fast",       # 工具 Agent，用一个较快、便宜的模型
+    "analysis": "gpt-5",    # 分析 Agent，用一个更强的模型
     "coder": "gpt-5",       # 编码 Agent，用一个最强的模型
     # "coder":"gpt-5-codex-high"
 }
-
 # AGENT_MODELS = {
 #     "planner": "deepseek-v3.2-exp",  # 规划 Agent，用一个较快、便宜的模型
 #     "tool": "deepseek-v3.2-exp",       # 工具 Agent，用一个较快、便宜的模型
 #     "analysis": "deepseek-v3.2-exp",    # 分析 Agent，用一个更强的模型
-#     "coder": "deepseek-v3.2-exp",       # 编码 Agent，用一个最强的模型
+#     "coder": "gpt-5-mini",       # 编码 Agent，用一个最强的模型
 # }
 # --- [!!! 已更新 !!!] ---
 
