@@ -1,0 +1,4 @@
+{
+  "problem_name": "1_64_conv_transposed_1D",
+  "pytorch_baseline_ms": 10.138644409179687
+}

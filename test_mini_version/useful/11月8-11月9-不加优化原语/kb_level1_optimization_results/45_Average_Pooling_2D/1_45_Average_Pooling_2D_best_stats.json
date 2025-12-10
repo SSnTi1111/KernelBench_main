@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_45_Average_Pooling_2D",
+  "baseline_ms": 11.579884033203125,
+  "best_cuda_ms": 10.387865447998047,
+  "speedup": 1.1147510613390554,
+  "last_updated_round": 1
+}

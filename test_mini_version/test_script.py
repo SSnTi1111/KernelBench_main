@@ -14,8 +14,8 @@ import signal # [!!! 新增 !!!]
 import gc
 
 # --- 1. 设置项目路径 ---
-KERNELBENCH_PATH = "/home/lxt/KernelBench/KernelBench"
-MINI_VERSION_PATH = "/home/lxt/KernelBench/KernelBench/mini_version"
+KERNELBENCH_PATH = "/home/lxt/KernelBench/KernelBench_main"
+MINI_VERSION_PATH = "/home/lxt/KernelBench/KernelBench_main/mini_version"
 
 # [!!! 已更新 !!!] 
 # 我们只添加 mini_version 
@@ -421,6 +421,7 @@ def main(args):
         ref_outputs = None
         pytorch_kernel_module = None
         cpp_wrapper_gpu_inputs = None
+        problem_module = None
         
         try:
             # 设置 2 小时 (7200 秒) 闹钟
@@ -734,38 +735,52 @@ def main(args):
         # 无论成功、失败还是超时，
         # finally 块总是执行
         finally:
-            # [!!!] 关键：禁用闹钟，
-            # 否则它可能在下一个循环中触发
-            signal.alarm(0)
+            signal.alarm(0) # 关闭超时闹钟
+            print(f"♻️  Global Cleanup: resetting environment after {problem_name}...")
             
-            # [!!! 已修复 !!!] 
-            # 显式删除大张量并清空 CUDA 缓存
-            # 这对于防止OOM和上下文错误至关重要
-            print(f"Cleaning up resources for {problem_name}...")
             try:
-                # 删除在 try 块中创建的变量
-                if 'inputs' in locals() and inputs is not None:
-                    del inputs
-                if 'gpu_inputs' in locals() and gpu_inputs is not None:
-                    del gpu_inputs
+                # 1. 按照依赖顺序反向删除对象
+                # 先删 ref_outputs (依赖 gpu_inputs/model)
                 if 'ref_outputs' in locals() and ref_outputs is not None:
                     del ref_outputs
-                if 'pytorch_kernel_module' in locals() and pytorch_kernel_module is not None:
-                    del pytorch_kernel_module
+                
+                # 删 inputs
+                if 'gpu_inputs' in locals() and gpu_inputs is not None:
+                    del gpu_inputs
+                if 'inputs' in locals() and inputs is not None:
+                    del inputs
                 if 'cpp_wrapper_gpu_inputs' in locals() and cpp_wrapper_gpu_inputs is not None:
                     del cpp_wrapper_gpu_inputs
+
+                # 删模型 (最占显存的部分)
+                if 'pytorch_kernel_module' in locals() and pytorch_kernel_module is not None:
+                    del pytorch_kernel_module
                 
-                # 强制Python垃圾回收
+                # 删 Python 模块对象 (防止 sys.modules 泄漏)
+                if 'problem_module' in locals() and problem_module is not None:
+                    del problem_module
+                if problem_name in sys.modules:
+                    del sys.modules[problem_name]
+
+                # 2. 清理全局 JIT 缓存
+                # 这一步非常重要，防止上一个任务的 .so 文件干扰下一个任务
+                # import cuda_utils as mv_cuda_utils # 确保能访问到
+                mv_cuda_utils._gemm_module = None
+
+                # 3. 强制 GC 和 Empty Cache
                 gc.collect()
                 
-                # 强制PyTorch清空CUDA缓存
+                # 同样包裹 try...except，防止上一个任务把 Context 搞坏了导致这里报错
                 torch.cuda.empty_cache()
                 
-                # 重置全局编译模块
-                mv_cuda_utils._gemm_module = None
-                print("Cleanup complete.")
-            except Exception as e:
-                print(f"Warning: Resource cleanup failed for {problem_name}: {e}")
+                print("✅ Cleanup complete. Memory recycled.")
+
+            except Exception as cleanup_e:
+                print(f"⚠️  Global cleanup warning for {problem_name}: {cleanup_e}")
+                # 即使这里报错，也不会影响下一个 for 循环的开始
+            
+            # [可选] 打印当前显存占用情况，确认回收效果
+            print(f"Current Memory: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                 # 即使清理失败也要继续
         
         # --- 7. 实时保存摘要 ---
