@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_47_Sum_reduction_over_a_dimension",
+  "baseline_ms": 5.263482666015625,
+  "best_cuda_ms": 5.410099029541016,
+  "speedup": 0.9728995046625182,
+  "last_updated_round": 3
+}

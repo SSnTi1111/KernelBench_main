@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_52_Argmin_over_a_dimension",
+  "baseline_ms": 6.45064697265625,
+  "best_cuda_ms": 5.573734283447266,
+  "speedup": 1.1573294751084955,
+  "last_updated_round": 0
+}

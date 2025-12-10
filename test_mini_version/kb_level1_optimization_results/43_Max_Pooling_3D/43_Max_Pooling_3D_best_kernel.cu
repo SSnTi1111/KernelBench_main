@@ -1,256 +1,288 @@
 #include <torch/extension.h>
-#include <vector> // 如果返回多个张量
 
 // C++ Wrapper 函数声明 (签名)
 torch::Tensor kb_43_Max_Pooling_3D_wrapper(torch::Tensor arg0, int64_t arg1, int64_t arg2, int64_t arg3, int64_t arg4);
 
 #include <torch/extension.h>
+
+// C++ Wrapper 函数声明 (签名)
+torch::Tensor kb_43_Max_Pooling_3D_wrapper(torch::Tensor arg0,
+                                           int64_t       arg1,
+                                           int64_t       arg2,
+                                           int64_t       arg3,
+                                           int64_t       arg4);
+
 #include <cuda_runtime.h>
 #include <cuda.h>
-#include <cmath>
-#include <vector>
-#include <cfloat>
-#include <algorithm>
-#include <limits>
-// [!!! 关键 !!!] 
-// PyTorch 2.1+ 移除了 c10::cuda::getCurrentCUDAStream
-// 使用 at::cuda::getCurrentCUDAStream() 代替
 #include <ATen/cuda/CUDAContext.h>
+#include <cfloat>
+#include <climits>
 
-// CUDA 内核实现: 3D Max Pooling（支持 stride、padding、dilation，ceil_mode=false）
-__global__ void maxpool3d_forward_kernel(
-    const float* __restrict__ in,
-    float* __restrict__ out,
-    long long N, long long C,
-    long long D, long long H, long long W,
-    int k, int stride, int pad, int dilation,
-    long long D_out, long long H_out, long long W_out
-) {
-    // 动态共享内存指针（当以平铺方式启动时使用）
-    // 注意：s_tile 的实际大小由 kernel 启动时的动态共享内存参数决定，
-    // 若未分配（例如 shared_bytes=0），则不得进入共享内存路径。
-    extern __shared__ float s_tile[];
-    int threads_w = blockDim.x;
+// ------------------------------------------------------------
+// Tiled-kernel compile-time knobs  (≤ 2 KB/block guarantee)
+// ------------------------------------------------------------
+#define TILE_OH            2
+#define TILE_OW            2
+#define MAX_SHARED_BYTES 2048
 
-    // 预计算有效核大小以减少重复乘法
-    long long eff_k = ((long long)dilation * ((long long)k - 1LL)) + 1LL;
+// ------------------------------------------------------------
+// Constant-memory block that keeps all invariant hyper-parameters
+// ------------------------------------------------------------
+struct Pool3DConst {
+    int N, C, D, H, W;      // input tensor sizes
+    int OD, OH, OW;         // output tensor sizes
+    int k, stride, pad, dil;
+    int total;              // total number of output elements (≤ INT_MAX)
+};
+__constant__ Pool3DConst gP;
 
-    // 当以特殊平铺配置启动（例如 threads_w == 32）时，使用共享内存优化路径；
-    // 否则回退到原始的每线程独立计算路径。
-    if (threads_w == 32) {
-        // 计算水平切片数（每个 block 处理 threads_w 个输出宽度）
-        int slices = (int)((W_out + threads_w - 1) / threads_w);
-        long long bidx = (long long)blockIdx.x;
-        int slice_id = (int)(bidx % slices);
-        long long outer_bidx = bidx / slices;
+// ------------------------------------------------------------
+// (Optional) helper – unused in max-pool kernel but kept from
+// the original file to satisfy build dependencies.
+// ------------------------------------------------------------
+__device__ float blockReduceSum(float val, float* shared) {
+    int lane = threadIdx.x % warpSize;
+    int wid  = threadIdx.x / warpSize;
 
-        // 反解 outer_bidx -> (n, c, od, oh)，不含 ow
-        long long tmp = outer_bidx;
-        long long oh = tmp % H_out; tmp /= H_out;
-        long long od = tmp % D_out; tmp /= D_out;
-        long long c  = tmp % C;     tmp /= C;
-        long long n  = tmp;
-
-        // 该 block 的 ow 起点与当前线程的 ow
-        long long ow_start = (long long)slice_id * threads_w;
-        long long ow = ow_start + threadIdx.x;
-        if (ow >= W_out) return;
-
-        // 对应输出窗口的起始位置（考虑 padding 与 stride）
-        long long start_d = od * (long long)stride - (long long)pad;
-        long long start_h = oh * (long long)stride - (long long)pad;
-        long long start_w = ow * (long long)stride - (long long)pad;
-
-        // 需要加载的输入 slab 边界（clip 到合法范围）
-        long long min_iw = ow_start * (long long)stride - (long long)pad;
-        long long max_iw = (ow_start + threads_w - 1) * (long long)stride - (long long)pad + (eff_k - 1LL);
-
-        long long lw_start_ll = min_iw > 0 ? min_iw : 0LL;
-        long long lw_end_ll   = max_iw + 1LL;
-        if (lw_end_ll < 0) lw_end_ll = 0LL;
-        if (lw_end_ll > W) lw_end_ll = W;
-        int load_w_start = (int)lw_start_ll;
-        int load_w_end   = (int)lw_end_ll;
-        int load_width   = load_w_end - load_w_start;
-
-        long long min_id = start_d;
-        long long max_id = start_d + (eff_k - 1LL);
-        long long ld_start_ll = min_id > 0 ? min_id : 0LL;
-        long long ld_end_ll   = max_id + 1LL;
-        if (ld_end_ll < 0) ld_end_ll = 0LL;
-        if (ld_end_ll > D) ld_end_ll = D;
-        int load_d_start = (int)ld_start_ll;
-        int load_d_end   = (int)ld_end_ll;
-        int load_depth   = load_d_end - load_d_start;
-
-        long long min_ih = start_h;
-        long long max_ih = start_h + (eff_k - 1LL);
-        long long lh_start_ll = min_ih > 0 ? min_ih : 0LL;
-        long long lh_end_ll   = max_ih + 1LL;
-        if (lh_end_ll < 0) lh_end_ll = 0LL;
-        if (lh_end_ll > H) lh_end_ll = H;
-        int load_h_start = (int)lh_start_ll;
-        int load_h_end   = (int)lh_end_ll;
-        int load_height  = load_h_end - load_h_start;
-
-        // 协同加载输入 slab 到共享内存，沿 W 方向合并访存
-        if (load_depth > 0 && load_height > 0 && load_width > 0) {
-            for (int ld_idx = 0; ld_idx < load_depth; ++ld_idx) {
-                long long id = (long long)load_d_start + (long long)ld_idx;
-                for (int lh_idx = 0; lh_idx < load_height; ++lh_idx) {
-                    long long ih = (long long)load_h_start + (long long)lh_idx;
-                    int offset_base = (ld_idx * load_height + lh_idx) * load_width;
-                    int num_passes = (load_width + threads_w - 1) / threads_w;
-                    for (int pass = 0; pass < num_passes; ++pass) {
-                        int gw = load_w_start + pass * threads_w + threadIdx.x;
-                        if (gw < load_w_end) {
-                            long long in_index = (((n * C + c) * D + id) * H + ih) * W + (long long)gw;
-                            int sw_idx = gw - load_w_start;
-                            s_tile[offset_base + sw_idx] = in[in_index];
-                        }
-                    }
-                }
-            }
-        }
-        __syncthreads();
-
-        // 在共享内存中计算当前线程的池化窗口最大值
-        float maxval = -FLT_MAX;
-        for (int kd = 0; kd < k; ++kd) {
-            long long id = start_d + (long long)kd * (long long)dilation;
-            if (id < 0 || id >= D) continue;
-            int ld_idx = (int)(id - (long long)load_d_start);
-            if (ld_idx < 0 || ld_idx >= load_depth) continue;
-
-            for (int kh = 0; kh < k; ++kh) {
-                long long ih = start_h + (long long)kh * (long long)dilation;
-                if (ih < 0 || ih >= H) continue;
-                int lh_idx = (int)(ih - (long long)load_h_start);
-                if (lh_idx < 0 || lh_idx >= load_height) continue;
-
-                // 预先计算 base 偏移以减少乘法次数
-                int base = (ld_idx * load_height + lh_idx) * load_width;
-
-                for (int kw = 0; kw < k; ++kw) {
-                    long long iw = start_w + (long long)kw * (long long)dilation;
-                    if (iw < 0 || iw >= W) continue;
-                    int lw_idx = (int)(iw - (long long)load_w_start);
-                    if (lw_idx < 0 || lw_idx >= load_width) continue;
-
-                    float val = s_tile[base + lw_idx];
-                    if (val > maxval) maxval = val;
-                }
-            }
-        }
-
-        long long out_index = (((n * C + c) * D_out + od) * H_out + oh) * W_out + ow;
-        out[out_index] = maxval;
-        return;
+    // Warp 内归约
+    for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+        val += __shfl_down_sync(0xFFFFFFFF, val, offset);
     }
 
-    // 回退路径：原始线性索引实现（不使用共享内存）
-    long long total = N * C * D_out * H_out * W_out;
-    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total) return;
+    // 每个 warp 的第一个线程写入 shared
+    if (lane == 0) shared[wid] = val;
+    __syncthreads();
 
-    // 反解线性索引 -> (n, c, od, oh, ow)
-    long long ow = idx % W_out;
-    long long tmp2 = idx / W_out;
-    long long oh2 = tmp2 % H_out; tmp2 /= H_out;
-    long long od2 = tmp2 % D_out; tmp2 /= D_out;
-    long long c2  = tmp2 % C;     tmp2 /= C;
-    long long n2  = tmp2;
-
-    // 计算池化窗口起始位置（考虑padding与stride）
-    long long start_d2 = od2 * (long long)stride - (long long)pad;
-    long long start_h2 = oh2 * (long long)stride - (long long)pad;
-    long long start_w2 = ow  * (long long)stride - (long long)pad;
-
-    float maxval2 = -FLT_MAX;
-
-    // 遍历核窗口（含dilation）
-    for (int kd = 0; kd < k; ++kd) {
-        long long id = start_d2 + (long long)kd * (long long)dilation;
-        if (id < 0 || id >= D) continue;
-        for (int kh = 0; kh < k; ++kh) {
-            long long ih = start_h2 + (long long)kh * (long long)dilation;
-            if (ih < 0 || ih >= H) continue;
-            for (int kw = 0; kw < k; ++kw) {
-                long long iw = start_w2 + (long long)kw * (long long)dilation;
-                if (iw < 0 || iw >= W) continue;
-
-                long long in_index = (((n2 * C + c2) * D + id) * H + ih) * W + iw;
-                float val = in[in_index];
-                if (val > maxval2) {
-                    maxval2 = val;
-                }
-            }
+    // 第一个 warp 完成最终归约
+    val = (threadIdx.x < blockDim.x / warpSize) ? shared[lane] : 0.0f;
+    if (wid == 0) {
+        for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+            val += __shfl_down_sync(0xFFFFFFFF, val, offset);
         }
     }
-
-    long long out_index2 = (((n2 * C + c2) * D_out + od2) * H_out + oh2) * W_out + ow;
-    out[out_index2] = maxval2;
+    return val;
 }
 
-// C++ Wrapper 实现
-torch::Tensor kb_43_Max_Pooling_3D_wrapper(torch::Tensor arg0, int64_t arg1, int64_t arg2, int64_t arg3, int64_t arg4) {
-    TORCH_CHECK(arg0.is_cuda(), "Input tensor must be on CUDA device");
-    TORCH_CHECK(arg0.dtype() == torch::kFloat32, "Only float32 dtype is supported");
-    TORCH_CHECK(arg0.dim() == 5, "Input must be a 5D tensor [N, C, D, H, W]");
+// ------------------------------------------------------------
+// NEW: Tiled 3-D MaxPooling kernel (≤2 KB dyn. shared-mem)
+// ------------------------------------------------------------
+__global__ __launch_bounds__(32, 8) __attribute__((maxrregcount(32)))
+void MaxPool3dKernelTile(const float* __restrict__ input,
+                         float*       __restrict__ output) {
+    extern __shared__ float sPatch[];
 
-    // 参数
-    int64_t k = arg1;        // kernel_size
-    int64_t stride = (arg2 > 0) ? arg2 : arg1; // 若为None，stride=kernel_size
-    int64_t pad = arg3;      // padding
-    int64_t dilation = arg4; // dilation
-    TORCH_CHECK(k > 0, "kernel_size must be > 0");
-    TORCH_CHECK(stride > 0, "stride must be > 0");
-    TORCH_CHECK(pad >= 0, "padding must be >= 0");
-    TORCH_CHECK(dilation > 0, "dilation must be > 0");
+    const int ip_h = gP.k + (TILE_OH - 1) * gP.stride;
+    const int ip_w = gP.k + (TILE_OW - 1) * gP.stride;
+    const int ip_d = gP.k;
+    const int patch_elems = ip_d * ip_h * ip_w;
 
-    // 保证连续
+    const int tid = threadIdx.x;
+
+    // --- Decode blockIdx ---------------------------------------------------
+    const int ow_tile = blockIdx.x;             // tiles in width  dimension
+    const int oh_tile = blockIdx.y;             // tiles in height dimension
+    int tmp          = blockIdx.z;              // pack (n,c,od)
+    const int od     = tmp % gP.OD;  tmp /= gP.OD;
+    const int  c     = tmp % gP.C;   tmp /= gP.C;
+    const int  n     = tmp;                     // remaining
+
+    const int ow_base = ow_tile * TILE_OW;
+    const int oh_base = oh_tile * TILE_OH;
+
+    // -----------------------------------------------------------------------
+    // Cooperative patch load (all 32 threads)
+    // -----------------------------------------------------------------------
+    for (int idx = tid; idx < patch_elems; idx += blockDim.x) {
+        int t = idx;
+        const int iw = t % ip_w; t /= ip_w;
+        const int ih = t % ip_h; t /= ip_h;
+        const int id = t;                       // 0 .. k-1
+
+        const int g_w = ow_base * gP.stride - gP.pad + iw;
+        const int g_h = oh_base * gP.stride - gP.pad + ih;
+        const int g_d = od       * gP.stride - gP.pad + id * gP.dil;
+
+        float v = -FLT_MAX;
+        if ((unsigned)g_w < (unsigned)gP.W &&
+            (unsigned)g_h < (unsigned)gP.H &&
+            (unsigned)g_d < (unsigned)gP.D) {
+            int gidx = ((((n * gP.C + c) * gP.D + g_d) * gP.H + g_h) * gP.W + g_w);
+            v = input[gidx];
+        }
+        sPatch[idx] = v;
+    }
+    __syncthreads();
+
+    // -----------------------------------------------------------------------
+    // First 4 threads compute the TILE_OH×TILE_OW outputs
+    // -----------------------------------------------------------------------
+    const int t_h = tid & 1;          //      0 / 1
+    const int t_w = (tid >> 1) & 1;   //      0 / 1
+
+    if (t_h >= TILE_OH || t_w >= TILE_OW) return; // remaining threads exit
+
+    const int oh = oh_base + t_h;
+    const int ow = ow_base + t_w;
+    if (oh >= gP.OH || ow >= gP.OW) return;       // boundary guard
+
+    float maxVal = -FLT_MAX;
+
+    for (int kd = 0; kd < gP.k; ++kd) {
+        for (int kh = 0; kh < gP.k; ++kh) {
+            for (int kw = 0; kw < gP.k; ++kw) {
+                int ip_h_off = kh + t_h * gP.stride;
+                int ip_w_off = kw + t_w * gP.stride;
+                int sidx = ((kd * ip_h) + ip_h_off) * ip_w + ip_w_off;
+                maxVal = fmaxf(maxVal, sPatch[sidx]);
+            }
+        }
+    }
+
+    int out_idx = ((((n * gP.C + c) * gP.OD + od) * gP.OH + oh) * gP.OW + ow);
+    output[out_idx] = maxVal;
+}
+
+// ------------------------------------------------------------
+// Reference 3-D MaxPooling kernel (unchanged)
+// ------------------------------------------------------------
+__global__ __launch_bounds__(256, 4) __attribute__((maxrregcount(32)))
+void MaxPool3dKernel(const float* __restrict__ input,
+                     float*       __restrict__ output) {
+    const int total = gP.total;                      // constant-mem fetch
+    const int strideGrid = blockDim.x * gridDim.x;   // 32-bit
+    int tid = blockIdx.x * blockDim.x + threadIdx.x; // 32-bit
+
+    for (int linear = tid; linear < total; linear += strideGrid) {
+        int tmp = linear;
+
+        // De-linearise (OW,OH,OD,C,N)
+        const int ow = tmp % gP.OW; tmp /= gP.OW;
+        const int oh = tmp % gP.OH; tmp /= gP.OH;
+        const int od = tmp % gP.OD; tmp /= gP.OD;
+        const int  c = tmp % gP.C;  tmp /= gP.C;
+        const int  n = tmp;                    // remaining
+
+        const int nc = n * gP.C + c;           // reused composite
+        const int hStart = oh * gP.stride - gP.pad;
+        const int wStart = ow * gP.stride - gP.pad;
+        const int dStart = od * gP.stride - gP.pad;
+
+        float maxVal = -FLT_MAX;
+
+        // depth loop
+        for (int kd = 0, id = dStart; kd < gP.k; ++kd, id += gP.dil) {
+            if (static_cast<unsigned>(id) >= static_cast<unsigned>(gP.D)) continue;
+
+            int dOffset = (nc * gP.D + id) * gP.H; // ((n*C+c)*D + id) * H
+
+            // height loop
+            for (int kh = 0, ih = hStart; kh < gP.k; ++kh, ih += gP.dil) {
+                if (static_cast<unsigned>(ih) >= static_cast<unsigned>(gP.H)) continue;
+
+                int hOffset = (dOffset + ih) * gP.W; // ... + ih) * W
+
+                // width loop
+                for (int kw = 0, iw = wStart; kw < gP.k; ++kw, iw += gP.dil) {
+                    if (static_cast<unsigned>(iw) >= static_cast<unsigned>(gP.W)) continue;
+
+                    float v = input[hOffset + iw];
+                    if (v > maxVal) maxVal = v;
+                }
+            }
+        }
+
+        output[linear] = maxVal;
+    }
+}
+
+// ------------------------------------------------------------
+// C++ Wrapper – interface remains unchanged
+// ------------------------------------------------------------
+torch::Tensor kb_43_Max_Pooling_3D_wrapper(torch::Tensor arg0,
+                                           int64_t       arg1,
+                                           int64_t       arg2,
+                                           int64_t       arg3,
+                                           int64_t       arg4) {
+    // ---- Sanity checks ----------------------------------------------------
+    TORCH_CHECK(arg0.is_cuda(),     "Input tensor must be on CUDA device");
+    TORCH_CHECK(arg0.dtype() == torch::kFloat32, "Input tensor must be float32");
+    TORCH_CHECK(arg0.dim()  == 5,   "Input must be a 5D tensor in NCDHW format");
+    TORCH_CHECK(arg1 > 0,           "kernel_size must be > 0");
+    TORCH_CHECK(arg2 > 0,           "stride must be > 0");
+    TORCH_CHECK(arg3 >= 0,          "padding must be >= 0");
+    TORCH_CHECK(arg4 > 0,           "dilation must be > 0");
+
     auto x = arg0.contiguous();
+    TORCH_CHECK(x.numel() < INT_MAX, "Tensor is too large for 32-bit indexing");
 
-    // 尺寸
-    long long N = x.size(0);
-    long long C = x.size(1);
-    long long D = x.size(2);
-    long long H = x.size(3);
-    long long W = x.size(4);
+    // ---- Gather dimensions ------------------------------------------------
+    const int64_t N = x.size(0);
+    const int64_t C = x.size(1);
+    const int64_t D = x.size(2);
+    const int64_t H = x.size(3);
+    const int64_t W = x.size(4);
 
-    // 输出尺寸 (ceil_mode = False)
-    long long eff_k = dilation * (k - 1) + 1; // effective kernel
-    long long D_out = (D + 2 * pad - eff_k) >= 0 ? ((D + 2 * pad - eff_k) / stride + 1) : 0;
-    long long H_out = (H + 2 * pad - eff_k) >= 0 ? ((H + 2 * pad - eff_k) / stride + 1) : 0;
-    long long W_out = (W + 2 * pad - eff_k) >= 0 ? ((W + 2 * pad - eff_k) / stride + 1) : 0;
+    const int64_t kernel_size = arg1;
+    const int64_t stride      = arg2;
+    const int64_t padding     = arg3;
+    const int64_t dilation    = arg4;
 
-    TORCH_CHECK(D_out > 0 && H_out > 0 && W_out > 0, "Calculated output size is non-positive. Check your parameters.");
+    // ---- Compute output size (ceil_mode = false) --------------------------
+    const int64_t k_eff = 1 + (kernel_size - 1) * dilation;
+    auto out_size = [&](int64_t in) {
+        int64_t out = (in + 2 * padding - k_eff) / stride + 1;
+        return std::max<int64_t>(out, 0);
+    };
+    const int64_t OD = out_size(D);
+    const int64_t OH = out_size(H);
+    const int64_t OW = out_size(W);
+    TORCH_CHECK(OD > 0 && OH > 0 && OW > 0,
+                "Computed output dimensions must be > 0");
 
-    // 分配输出
-    auto out = torch::empty({N, C, D_out, H_out, W_out}, x.options());
+    // ---- Allocate output --------------------------------------------------
+    auto out = torch::empty({N, C, OD, OH, OW}, x.options());
 
-    // 指针
-    const float* in_ptr = x.data_ptr<float>();
-    float* out_ptr = out.data_ptr<float>();
+    // ---- Prepare constant-memory payload ----------------------------------
+    Pool3DConst hostP;
+    hostP.N  = static_cast<int>(N);
+    hostP.C  = static_cast<int>(C);
+    hostP.D  = static_cast<int>(D);
+    hostP.H  = static_cast<int>(H);
+    hostP.W  = static_cast<int>(W);
 
-    // 启动配置
-    long long total = N * C * D_out * H_out * W_out;
-    int threads = 256;
-    int blocks = static_cast<int>((total + threads - 1) / threads);
+    hostP.OD = static_cast<int>(OD);
+    hostP.OH = static_cast<int>(OH);
+    hostP.OW = static_cast<int>(OW);
 
-    // 调用内核
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    maxpool3d_forward_kernel<<<blocks, threads, 0, stream>>>(
-        in_ptr, out_ptr,
-        N, C, D, H, W,
-        static_cast<int>(k),
-        static_cast<int>(stride),
-        static_cast<int>(pad),
-        static_cast<int>(dilation),
-        D_out, H_out, W_out
-    );
-    auto err = cudaGetLastError();
-    TORCH_CHECK(err == cudaSuccess, "maxpool3d_forward_kernel launch failed: ", cudaGetErrorString(err));
+    hostP.k      = static_cast<int>(kernel_size);
+    hostP.stride = static_cast<int>(stride);
+    hostP.pad    = static_cast<int>(padding);
+    hostP.dil    = static_cast<int>(dilation);
+
+    int64_t total64 = N * C * OD * OH * OW;
+    TORCH_CHECK(total64 < INT_MAX,
+                "Total number of output elements exceeds 32-bit range");
+    hostP.total = static_cast<int>(total64);
+
+    // copy to device constant memory
+    cudaMemcpyToSymbolAsync(gP, &hostP, sizeof(Pool3DConst), 0,
+                            cudaMemcpyHostToDevice,
+                            at::cuda::getCurrentCUDAStream());
+
+    // ---- Launch kernel ----------------------------------------------------
+    const int threads = 256;
+    int blocks = static_cast<int>((hostP.total + threads - 1) / threads);
+    blocks = std::min(blocks, 65535); // stay within grid-size limit
+
+    auto stream = at::cuda::getCurrentCUDAStream();
+    MaxPool3dKernel<<<blocks, threads, 0, stream.stream()>>>(
+        x.data_ptr<float>(), out.data_ptr<float>());
+
+    // ---- Error check ------------------------------------------------------
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess,
+                "MaxPool3dKernel launch failed: ",
+                cudaGetErrorString(err));
 
     return out;
 }

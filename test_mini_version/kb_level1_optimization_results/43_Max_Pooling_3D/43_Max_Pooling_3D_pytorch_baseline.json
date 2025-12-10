@@ -1,4 +1,4 @@
 {
   "problem_name": "43_Max_Pooling_3D",
-  "pytorch_baseline_ms": 8.905256958007813
+  "pytorch_baseline_ms": 8.905604858398437
 }

@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_51_Argmax_over_a_dimension",
+  "baseline_ms": 6.451343383789062,
+  "best_cuda_ms": 5.574758529663086,
+  "speedup": 1.1572417620353779,
+  "last_updated_round": 0
+}

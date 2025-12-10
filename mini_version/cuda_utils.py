@@ -172,10 +172,13 @@ def run_gemm(inputs: List[torch.Tensor], wrapper_function_name: str):
     return wrapper_func(*inputs)
 
 # [!!! 已更新 !!!] 接受通用输入和引用
+# [!!! 请替换 cuda_utils.py 中的 check_correctness 函数 !!!]
+
 def check_correctness(inputs: List[torch.Tensor], ref_outputs: List[torch.Tensor], wrapper_function_name: str):
     """
     (此函数已更新)
     检查通用内核的正确性。
+    返回: (is_correct: bool, error_msg: str)
     """
     print("Running evolved kernel for correctness check...")
     try:
@@ -189,31 +192,78 @@ def check_correctness(inputs: List[torch.Tensor], ref_outputs: List[torch.Tensor
         if not isinstance(C_evolved_outputs, (list, tuple)):
             C_evolved_outputs = [C_evolved_outputs]
 
+        # 1. 检查输出数量
         if len(C_evolved_outputs) != len(gpu_ref_outputs):
+            msg = (f"Failed (Correctness): Output count mismatch. "
+                   f"Expected {len(gpu_ref_outputs)}, got {len(C_evolved_outputs)}.")
             print(f"--- KERNEL IS INCORRECT ---")
-            print(f"Error: Output count mismatch. Expected {len(gpu_ref_outputs)}, got {len(C_evolved_outputs)}.")
+            print(msg)
             print("---------------------------")
-            return False
+            return False, msg
 
         is_correct = True
+        error_msgs = []
+
+        # 2. 逐个检查输出张量
         for i, (evolved_t, ref_t) in enumerate(zip(C_evolved_outputs, gpu_ref_outputs)):
+            # 检查形状
+            if evolved_t.shape != ref_t.shape:
+                is_correct = False
+                msg = (f"Failed (Correctness): Shape mismatch at Output {i}. "
+                       f"Expected {ref_t.shape}, got {evolved_t.shape}.")
+                error_msgs.append(msg)
+                print(msg)
+                continue # 继续检查下一个输出，或者直接返回也可以
+
+            # 检查数值 (atol=1e-2, rtol=1e-2)
             if not torch.allclose(evolved_t, ref_t, atol=1e-2, rtol=1e-2):
                 is_correct = False
+                
+                # --- [核心修改] 捕获前 5 个错误值 ---
+                diff = torch.abs(evolved_t - ref_t)
+                # 计算允许的误差范围
+                tol = 1e-2 + 1e-2 * torch.abs(ref_t)
+                # 找出超出误差的掩码
+                error_mask = diff > tol
+                # 获取错误索引
+                error_indices = torch.nonzero(error_mask, as_tuple=False)
+                num_errors = error_indices.size(0)
+                
+                msg_header = f"Failed (Correctness): Output {i} has {num_errors} mismatches (total elements: {ref_t.numel()})."
+                error_details = [msg_header]
+                error_details.append("Top 5 Mismatches (Index | Reference Value | Actual Value):")
+                
+                # 取前 5 个
+                for j in range(min(5, num_errors)):
+                    idx = error_indices[j]
+                    idx_tuple = tuple(idx.tolist())
+                    ref_val = ref_t[idx_tuple].item()
+                    act_val = evolved_t[idx_tuple].item()
+                    error_details.append(f"  [{j}] Index: {idx_tuple} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
+                
+                full_msg = "\n".join(error_details)
+                error_msgs.append(full_msg)
+                
                 print(f"--- KERNEL IS INCORRECT (Output {i}) ---")
-                print("Ref [0,0]:", ref_t.flatten()[0].item())
-                print("Evolved [0,0]:", evolved_t.flatten()[0].item())
+                print(full_msg)
                 print("---------------------------")
-                break # 
-        
-        return is_correct
+                # 只要发现一个输出不对，通常就可以返回了，或者收集所有错误
+                # 这里我们收集第一个主要错误后直接返回，避免 Prompt 过长
+                return False, full_msg
+
+        if is_correct:
+            return True, ""
+        else:
+            # 只有形状错误会走到这里
+            return False, "\n".join(error_msgs)
 
     except Exception as e:
+        err_str = f"Runtime Error during check_correctness: {e}\n{traceback.format_exc()}"
         print(f"--- KERNEL RUNTIME FAILED ---")
-        print(e)
-        traceback.print_exc()
+        print(err_str)
         print("-----------------------------")
-        return False
-
+        return False, err_str
+        
 # vvv --- PTXAS 解析器 (保持不变) --- vvv
 def parse_ptxas_info(log_str: str) -> Dict[str, float]:
     """

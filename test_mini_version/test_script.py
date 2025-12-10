@@ -574,16 +574,18 @@ def main(args):
                         # 步骤 2: 尝试检查正确性 (如果编译成功)
                         print("Checking correctness...")
                         try:
-                            is_correct = mv_cuda_utils.check_correctness(
-                                cpp_wrapper_gpu_inputs, # [!!! 已修复 !!!] 
+                            # [!!! 已修改 !!!] 解包返回的元组 (is_correct, error_msg)
+                            is_correct, correctness_log = mv_cuda_utils.check_correctness(
+                                cpp_wrapper_gpu_inputs, 
                                 ref_outputs, 
                                 wrapper_function_name
                             )
                         except Exception as e:
-                            # 捕获内核内部的运行时错误 (e.g., segfault)
-                            print(f"Runtime Error during correctness check: {e}")
+                            # 这一层的捕获是为了防止 check_correctness 内部没有任何 try-except 导致崩溃
+                            # 虽然 cuda_utils 内部已经有了 try-except
+                            print(f"Runtime Error calling check_correctness: {e}")
                             is_correct = False
-                            error_message = f"Runtime Error during check_correctness: {e}\n{traceback.format_exc()}"
+                            correctness_log = f"Runtime Error during check_correctness call: {e}\n{traceback.format_exc()}"
                             
                         if is_correct:
                             print("Correctness VERIFIED. Initial kernel is valid.")
@@ -591,12 +593,15 @@ def main(args):
                             break # [!!! 成功，退出修正循环 !!!]
                         else:
                             print("Correctness FAILED.")
-                            if not error_message: # 如果 check_correctness 只是返回 False
-                                error_message = "Failed (Correctness): Kernel output does not match reference output."
+                            # [!!! 已修改 !!!] 使用返回的详细错误信息
+                            error_message = correctness_log
+                            if not error_message: 
+                                error_message = "Failed (Correctness): Kernel output mismatch (unknown details)."
 
                     except RuntimeError as e:
                         # 捕获 `load_gemm_module` (Compilation) 失败
                         print("Compilation FAILED.")
+                        # 包含具体的 NVCC 错误日志
                         error_message = str(e)
                     except Exception as e:
                         # 捕获其他意外错误
@@ -606,7 +611,11 @@ def main(args):
                     # 步骤 3: 修正 (如果发生任何错误)
                     if error_message:
                         print(f"Error captured. Attempting LLM correction (Attempt {attempt+1})...")
-                        # (截断长的错误信息)
+                        
+                        # 打印一部分错误信息用于调试
+                        print(f"--- Error Snippet ---\n{error_message[:500]}...\n---------------------")
+
+                        # (截断过长的错误信息，防止超过 token 限制)
                         if len(error_message) > 4000:
                              error_message = error_message[:2000] + "\n...[TRUNCATED]...\n" + error_message[-2000:]
                              

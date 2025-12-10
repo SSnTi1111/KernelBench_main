@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_49_Max_reduction_over_a_dimension",
+  "baseline_ms": 6.491094970703125,
+  "best_cuda_ms": 1.157529640197754,
+  "speedup": 5.607713828903922,
+  "last_updated_round": 5
+}

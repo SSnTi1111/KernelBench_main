@@ -1,7 +1,7 @@
 {
   "problem_name": "kb_43_Max_Pooling_3D",
-  "baseline_ms": 8.905256958007813,
-  "best_cuda_ms": 15.483084106445313,
-  "speedup": 0.5751604071117022,
-  "last_updated_round": 2
+  "baseline_ms": 8.905604858398437,
+  "best_cuda_ms": 6.905958557128907,
+  "speedup": 1.2895537650172153,
+  "last_updated_round": 5
 }

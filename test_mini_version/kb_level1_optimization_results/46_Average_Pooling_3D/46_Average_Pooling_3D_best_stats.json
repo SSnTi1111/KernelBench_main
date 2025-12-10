@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_46_Average_Pooling_3D",
+  "baseline_ms": 18.749910888671874,
+  "best_cuda_ms": 12.307968139648438,
+  "speedup": 1.5233961183464229,
+  "last_updated_round": 4
+}

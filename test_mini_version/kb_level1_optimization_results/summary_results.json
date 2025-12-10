@@ -1,44 +1,44 @@
 {
-  "1_37_FrobeniusNorm_": {
-    "baseline_ms": 15.207711181640626,
-    "best_cuda_ms": 13.042585754394532,
-    "speedup": 1.1660043083494072,
-    "status": "Success"
-  },
-  "1_38_L1Norm_": {
-    "baseline_ms": 27.82005126953125,
-    "best_cuda_ms": Infinity,
-    "speedup": 0.0,
-    "status": "Failed optimization loop: CUDA error: misaligned address\nSearch for `cudaErrorMisalignedAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\nCompile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.\n"
-  },
-  "1_39_L2Norm_": {
-    "baseline_ms": 17.9051318359375,
-    "best_cuda_ms": 15.315763854980469,
-    "speedup": 1.1690655461572035,
-    "status": "Success"
-  },
-  "1_42_Max_Pooling_2D": {
-    "baseline_ms": 21.88650390625,
-    "best_cuda_ms": 17.38065948486328,
-    "speedup": 1.2592447326472758,
-    "status": "Success"
-  },
-  "1_45_Average_Pooling_2D": {
-    "baseline_ms": 11.5672265625,
-    "best_cuda_ms": Infinity,
-    "speedup": 0.0,
-    "status": "Failed optimization loop: CUDA error: misaligned address\nSearch for `cudaErrorMisalignedAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\nCompile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.\n"
-  },
   "1_64_conv_transposed_1D": {
-    "baseline_ms": 10.137538452148437,
+    "baseline_ms": 10.1564208984375,
     "best_cuda_ms": Infinity,
     "speedup": 0.0,
     "status": "Failed initial generation/correction"
   },
   "43_Max_Pooling_3D": {
-    "baseline_ms": 8.905256958007813,
-    "best_cuda_ms": 15.483084106445313,
-    "speedup": 0.5751604071117022,
+    "baseline_ms": 8.905604858398437,
+    "best_cuda_ms": 6.905958557128907,
+    "speedup": 1.2895537650172153,
+    "status": "Success"
+  },
+  "46_Average_Pooling_3D": {
+    "baseline_ms": 18.749910888671874,
+    "best_cuda_ms": 12.307968139648438,
+    "speedup": 1.5233961183464229,
+    "status": "Success"
+  },
+  "47_Sum_reduction_over_a_dimension": {
+    "baseline_ms": 5.263482666015625,
+    "best_cuda_ms": 5.410099029541016,
+    "speedup": 0.9728995046625182,
+    "status": "Success"
+  },
+  "48_Mean_reduction_over_a_dimension": {
+    "baseline_ms": 5.268869018554687,
+    "best_cuda_ms": 5.58653450012207,
+    "speedup": 0.9431372917216493,
+    "status": "Success"
+  },
+  "49_Max_reduction_over_a_dimension": {
+    "baseline_ms": 6.491094970703125,
+    "best_cuda_ms": 1.157529640197754,
+    "speedup": 5.607713828903922,
+    "status": "Success"
+  },
+  "1_51_Argmax_over_a_dimension": {
+    "baseline_ms": 6.451343383789062,
+    "best_cuda_ms": 5.574758529663086,
+    "speedup": 1.1572417620353779,
     "status": "Success"
   }
 }

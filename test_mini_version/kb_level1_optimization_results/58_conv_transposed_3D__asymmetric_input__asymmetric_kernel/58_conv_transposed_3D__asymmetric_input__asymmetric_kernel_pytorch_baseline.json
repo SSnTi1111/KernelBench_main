@@ -1,0 +1,4 @@
+{
+  "problem_name": "58_conv_transposed_3D__asymmetric_input__asymmetric_kernel",
+  "pytorch_baseline_ms": 12.160184326171875
+}

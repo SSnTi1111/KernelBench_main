@@ -1,0 +1,4 @@
+{
+  "problem_name": "47_Sum_reduction_over_a_dimension",
+  "pytorch_baseline_ms": 5.263482666015625
+}
