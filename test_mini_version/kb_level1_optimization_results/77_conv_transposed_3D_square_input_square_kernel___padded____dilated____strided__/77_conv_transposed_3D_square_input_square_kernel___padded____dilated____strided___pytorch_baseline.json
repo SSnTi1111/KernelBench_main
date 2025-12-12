@@ -1,0 +1,4 @@
+{
+  "problem_name": "77_conv_transposed_3D_square_input_square_kernel___padded____dilated____strided__",
+  "pytorch_baseline_ms": 2.0679475402832033
+}

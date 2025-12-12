@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_90_cumprod",
+  "baseline_ms": 11.488624267578125,
+  "best_cuda_ms": 7.8695426940917965,
+  "speedup": 1.4598846100934708,
+  "last_updated_round": 5
+}

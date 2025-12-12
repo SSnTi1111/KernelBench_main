@@ -1,0 +1,4 @@
+{
+  "problem_name": "92_cumsum_exclusive",
+  "pytorch_baseline_ms": 17.773507080078126
+}

@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_91_cumsum_reverse",
+  "baseline_ms": 23.7085498046875,
+  "best_cuda_ms": 0.511897611618042,
+  "speedup": 46.31502329098166,
+  "last_updated_round": 2
+}

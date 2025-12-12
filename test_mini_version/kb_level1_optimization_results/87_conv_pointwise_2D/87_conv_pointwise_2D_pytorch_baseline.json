@@ -1,0 +1,4 @@
+{
+  "problem_name": "87_conv_pointwise_2D",
+  "pytorch_baseline_ms": 8.421437377929687
+}

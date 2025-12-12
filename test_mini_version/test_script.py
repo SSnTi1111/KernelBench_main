@@ -55,7 +55,7 @@ def extract_code_block(text, lang):
     return None
 
 
-def get_pytorch_to_cuda_prompt(pytorch_code, inputs, ref_outputs, kernel_name, wrapper_name):
+def get_pytorch_to_cuda_prompt(pytorch_code, inputs, ref_outputs, kernel_name, wrapper_name):# TODO 目前对于inputs包含两个前面是get_inputs后面是get_inputs_init，都有可能存在triple和bool类型，目前下面没有处理
     """
     (此函数已更新，以匹配 mini_version 的编译结构)
     """
@@ -349,7 +349,18 @@ class TimeoutException(Exception):
 def timeout_handler(signum, frame):
     # (7200秒)
     raise TimeoutException("该测试用例处理超时 (超过 2 小时)")
-# [!!! 新增结束 !!!]
+
+
+def move_to_cuda(item):
+    if isinstance(item, torch.Tensor):
+        return item.cuda()
+    elif isinstance(item, (list, tuple)):
+        # 递归处理列表或元组，并保持原有类型
+        return type(item)(move_to_cuda(x) for x in item)
+    elif isinstance(item, dict):
+        return {k: move_to_cuda(v) for k, v in item.items()}
+    else:
+        return item
 
 def main(args):
     print("--- 优化配置 (来自 mini_version/config.py) ---")
@@ -403,7 +414,7 @@ def main(args):
         best_kernel_path = os.path.join(problem_results_dir, f"{problem_name}_best_kernel.cu")
         
         
-        if problem_name in summary_results and os.path.exists(best_kernel_path) and not args.force_rerun:
+        if problem_name in summary_results and os.path.exists(best_kernel_path) and not args.force_rerun:# 跳过已经执行的用例
             print(f"--- Skipping {problem_name} (结果已存在于 summary.json) ---")
             continue
             
@@ -459,12 +470,12 @@ def main(args):
                 
                 # [!!! 已更新 !!!] 
                 # 自己生成参考输出 (Ref Outputs)
-                gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
+                gpu_inputs = [move_to_cuda(t) for t in inputs]# 经过处理后目前gpu_inputs中的tensor已经是在GPU上了 TODO：如果inputs中存在tensor元组这里应该处理不了
                 
                 # (确保 ref_outputs 始终是列表)
-                ref_outputs_raw = pytorch_kernel_module(*gpu_inputs)
-                if not isinstance(ref_outputs_raw, (list, tuple)):
-                    ref_outputs = [ref_outputs_raw]
+                ref_outputs_raw = pytorch_kernel_module(*gpu_inputs)#*gpu_inputs 表示解包列表或元组，把里面的元素作为单独参数传入函数。
+                if not isinstance(ref_outputs_raw, (list, tuple)):# 如果返回值 不是 list 或 tuple，即返回单个张量。
+                    ref_outputs = [ref_outputs_raw]#把单个张量放到一个列表里。
                 else:
                     ref_outputs = list(ref_outputs_raw)
                 
@@ -478,7 +489,7 @@ def main(args):
                 # 过滤掉布尔值 (例如 'return_indices')，
                 # 因为它们通常控制 *输出签名* (例如，返回一个还是两个张量)，
                 # 而不是作为 *输入* 参数传递给内核。
-                runtime_init_args = [arg for arg in init_inputs if not isinstance(arg, bool)]
+                runtime_init_args = [arg for arg in init_inputs if not isinstance(arg, bool)]# TODO 是不是应该删掉？？？
                 
                 if runtime_init_args:
                     print(f"为 {problem_name} 添加 {len(runtime_init_args)} 个 __init__ 参数: {runtime_init_args}")

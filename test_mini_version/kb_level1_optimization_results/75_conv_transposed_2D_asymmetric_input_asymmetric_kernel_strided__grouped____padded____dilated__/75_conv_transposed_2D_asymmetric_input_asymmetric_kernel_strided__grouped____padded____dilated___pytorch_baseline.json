@@ -1,0 +1,4 @@
+{
+  "problem_name": "75_conv_transposed_2D_asymmetric_input_asymmetric_kernel_strided__grouped____padded____dilated__",
+  "pytorch_baseline_ms": 6.586429443359375
+}

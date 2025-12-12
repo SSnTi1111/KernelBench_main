@@ -1,0 +1,4 @@
+{
+  "problem_name": "80_conv_standard_2D_square_input_asymmetric_kernel___dilated____padded__",
+  "pytorch_baseline_ms": 4.875448303222656
+}

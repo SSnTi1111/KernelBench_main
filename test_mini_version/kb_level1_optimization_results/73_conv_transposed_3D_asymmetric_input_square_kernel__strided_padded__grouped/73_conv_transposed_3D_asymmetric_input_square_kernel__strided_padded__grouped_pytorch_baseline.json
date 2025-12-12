@@ -1,0 +1,4 @@
+{
+  "problem_name": "73_conv_transposed_3D_asymmetric_input_square_kernel__strided_padded__grouped",
+  "pytorch_baseline_ms": 7.381278686523437
+}

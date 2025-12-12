@@ -1,0 +1,10 @@
+[
+  {
+    "attempt": 0,
+    "type": "generation",
+    "response": "LLM 响应为空",
+    "cpp_code_extracted": false,
+    "cuda_code_extracted": false,
+    "error": ""
+  }
+]

@@ -1,0 +1,4 @@
+{
+  "problem_name": "76_conv_standard_1D_dilated_strided__",
+  "pytorch_baseline_ms": 20.8256201171875
+}

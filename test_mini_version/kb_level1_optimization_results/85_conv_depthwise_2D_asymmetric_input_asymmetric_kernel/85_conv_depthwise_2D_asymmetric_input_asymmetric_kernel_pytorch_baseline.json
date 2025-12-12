@@ -1,0 +1,4 @@
+{
+  "problem_name": "85_conv_depthwise_2D_asymmetric_input_asymmetric_kernel",
+  "pytorch_baseline_ms": 4.79467529296875
+}

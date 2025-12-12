@@ -1,0 +1,4 @@
+{
+  "problem_name": "74_conv_transposed_1D_dilated",
+  "pytorch_baseline_ms": 3.8590872192382815
+}

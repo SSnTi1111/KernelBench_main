@@ -1,0 +1,4 @@
+{
+  "problem_name": "67_conv_standard_1D",
+  "pytorch_baseline_ms": 4.79963134765625
+}

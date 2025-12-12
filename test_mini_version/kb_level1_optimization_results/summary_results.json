@@ -40,5 +40,233 @@
     "best_cuda_ms": 5.574758529663086,
     "speedup": 1.1572417620353779,
     "status": "Success"
+  },
+  "53_Min_reduction_over_a_dimension": {
+    "baseline_ms": 6.483722534179687,
+    "best_cuda_ms": 31.454104614257812,
+    "speedup": 0.2061327961388125,
+    "status": "Success"
+  },
+  "54_conv_standard_3D__square_input__square_kernel": {
+    "baseline_ms": 3.559403381347656,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "55_conv_standard_2D__asymmetric_input__square_kernel": {
+    "baseline_ms": 8.215162963867188,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "56_conv_standard_2D__asymmetric_input__asymmetric_kernel": {
+    "baseline_ms": 6.3319244384765625,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "57_conv_transposed_2D__square_input__square_kernel": {
+    "baseline_ms": 13.87526123046875,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "58_conv_transposed_3D__asymmetric_input__asymmetric_kernel": {
+    "baseline_ms": 12.156273193359375,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "59_conv_standard_3D__asymmetric_input__square_kernel": {
+    "baseline_ms": 6.697717895507813,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "60_conv_standard_3D__square_input__asymmetric_kernel": {
+    "baseline_ms": 7.025233764648437,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "61_conv_transposed_3D__square_input__square_kernel": {
+    "baseline_ms": 7.8710986328125,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "62_conv_standard_2D__square_input__asymmetric_kernel": {
+    "baseline_ms": 4.960133056640625,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "63_conv_standard_2D__square_input__square_kernel": {
+    "baseline_ms": 13.129052734375,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "65_conv_transposed_2D__square_input__asymmetric_kernel": {
+    "baseline_ms": 5.7456640625,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "66_conv_standard_3D__asymmetric_input__asymmetric_kernel": {
+    "baseline_ms": 3.4543206787109373,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "67_conv_standard_1D": {
+    "baseline_ms": 4.79963134765625,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "68_conv_transposed_3D__square_input__asymmetric_kernel": {
+    "baseline_ms": 59.042939453125,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "69_conv_transposed_2D__asymmetric_input__asymmetric_kernel": {
+    "baseline_ms": 7.2193231201171875,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "70_conv_transposed_3D__asymmetric_input__square_kernel": {
+    "baseline_ms": 25.04605712890625,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "71_conv_transposed_2D__asymmetric_input__square_kernel": {
+    "baseline_ms": 3.5628646850585937,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "72_conv_transposed_3D_asymmetric_input_asymmetric_kernel___strided_padded_grouped_": {
+    "baseline_ms": 5.696840209960937,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "73_conv_transposed_3D_asymmetric_input_square_kernel__strided_padded__grouped": {
+    "baseline_ms": 7.381278686523437,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "74_conv_transposed_1D_dilated": {
+    "baseline_ms": 3.8590872192382815,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "75_conv_transposed_2D_asymmetric_input_asymmetric_kernel_strided__grouped____padded____dilated__": {
+    "baseline_ms": 6.586429443359375,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "76_conv_standard_1D_dilated_strided__": {
+    "baseline_ms": 20.8256201171875,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "77_conv_transposed_3D_square_input_square_kernel___padded____dilated____strided__": {
+    "baseline_ms": 2.0679475402832033,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "78_conv_transposed_2D_asymmetric_input_asymmetric_kernel___padded__": {
+    "baseline_ms": 6.137937622070313,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "79_conv_transposed_1D_asymmetric_input_square_kernel___padded____strided____dilated__": {
+    "baseline_ms": 3.863470153808594,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "80_conv_standard_2D_square_input_asymmetric_kernel___dilated____padded__": {
+    "baseline_ms": 4.875448303222656,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "81_conv_transposed_2D_asymmetric_input_square_kernel___dilated____padded____strided__": {
+    "baseline_ms": 2.2949888610839846,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "82_conv_depthwise_2D_square_input_square_kernel": {
+    "baseline_ms": 5.005025329589844,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "83_conv_depthwise_2D_square_input_asymmetric_kernel": {
+    "baseline_ms": 2.9281689453125,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "84_conv_depthwise_2D_asymmetric_input_square_kernel": {
+    "baseline_ms": 19.923231201171873,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "85_conv_depthwise_2D_asymmetric_input_asymmetric_kernel": {
+    "baseline_ms": 4.79467529296875,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "86_conv_depthwise_separable_2D": {
+    "baseline_ms": 7.2075262451171875,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "87_conv_pointwise_2D": {
+    "baseline_ms": 8.421437377929687,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed initial generation/correction"
+  },
+  "88_MinGPTNewGelu": {
+    "baseline_ms": 2.8683877563476563,
+    "best_cuda_ms": 0.38594560623168944,
+    "speedup": 7.432103669618449,
+    "status": "Success"
+  },
+  "89_cumsum": {
+    "baseline_ms": 11.485389404296875,
+    "best_cuda_ms": 5.131571197509766,
+    "speedup": 2.2381818281836314,
+    "status": "Success"
+  },
+  "90_cumprod": {
+    "baseline_ms": 11.488624267578125,
+    "best_cuda_ms": 7.8695426940917965,
+    "speedup": 1.4598846100934708,
+    "status": "Success"
+  },
+  "91_cumsum_reverse": {
+    "baseline_ms": 23.7085498046875,
+    "best_cuda_ms": 0.511897611618042,
+    "speedup": 46.31502329098166,
+    "status": "Success"
   }
 }

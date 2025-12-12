@@ -1,0 +1,4 @@
+{
+  "problem_name": "86_conv_depthwise_separable_2D",
+  "pytorch_baseline_ms": 7.2075262451171875
+}
