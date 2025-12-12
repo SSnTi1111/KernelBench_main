@@ -27,7 +27,7 @@ AGENT_MODELS = {
     # "initial_corrector": "DeepSeek-V3.1-Fast", # [!!! 新增 !!!] (建议使用您最强的模型)
     # "initial_corrector": "gpt-5", # [!!! 新增 !!!] (建议使用您最强的模型)
 
-    "planner": "grok-4-fast",  # 规划 Agent，用一个较快、便宜的模型
+    "planner": "gpt-5-mini",  # 规划 Agent，用一个较快、便宜的模型
     "tool": "grok-4-fast",       # 工具 Agent，用一个较快、便宜的模型
     "analysis": "o3",    # 分析 Agent，用一个更强的模型
     "coder": "o3",       # 编码 Agent，用一个最强的模型

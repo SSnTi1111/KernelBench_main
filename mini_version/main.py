@@ -151,17 +151,29 @@ def format_metrics_for_llm(ptxas_metrics: dict, ncu_metrics: dict) -> str:
 
 
 # [!!! 已更新 !!!] main() 已重构为通用函数
+# def run_optimization_on_problem(
+#     problem_name: str,
+#     cpp_source: str, 
+#     initial_cuda_code: str, 
+#     inputs: List[torch.Tensor], 
+#     ref_outputs: List[torch.Tensor],
+#     kernel_name: str,           # __global__ 函数名
+#     wrapper_function_name: str, # C++ wrapper 函数名
+#     iteration_rounds: int,
+#     history_file_path: str,
+#     baseline_time_ms: float = float('inf') # [!!! 已修改 !!!] 接收Pytorch基准
+# ):
 def run_optimization_on_problem(
-    problem_name: str,
-    cpp_source: str, 
-    initial_cuda_code: str, 
-    inputs: List[torch.Tensor], 
+    problem_name,
+    initial_cuda_code,
+    inputs, 
+    init_inputs,
     ref_outputs: List[torch.Tensor],
-    kernel_name: str,           # __global__ 函数名
-    wrapper_function_name: str, # C++ wrapper 函数名
-    iteration_rounds: int,
-    history_file_path: str,
-    baseline_time_ms: float = float('inf') # [!!! 已修改 !!!] 接收Pytorch基准
+    # kernel_name: str,           # __global__ 函数名
+    # wrapper_function_name: str, # C++ wrapper 函数名
+    iteration_rounds,
+    history_file_path,
+    baseline_time_ms # [!!! 已修改 !!!] 接收Pytorch基准
 ):
     """
     运行通用的、线性的多智能体优化循环。
@@ -217,16 +229,16 @@ def run_optimization_on_problem(
     if not optimization_history: 
         print("\n--- Round 0: Compiling and analyzing baseline (naive) kernel ---")
         current_module_name = f"{problem_name}_0" # <--- [!!! 已更新 !!!]
-        
         try:
-            module, stdout_log, stderr_log = cuda_utils.load_gemm_module(
-                cpp_source, 
+            module, stdout_log, stderr_log = cuda_utils.load_module(
+                # cpp_source, 
                 best_kernel_code_cuda, 
-                module_name=current_module_name,
-                wrapper_function_name=wrapper_function_name # <--- [!!! 已更新 !!!]
+                current_module_name,
+                init_inputs
+                # wrapper_function_name=wrapper_function_name # <--- [!!! 已更新 !!!]
             )
             print("Baseline kernel compiled successfully.")
-            best_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log + stderr_log)
+            best_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log.getvalue() + stderr_log.getvalue())
             
             # [!!! 已更新 !!!]
             is_correct = cuda_utils.check_correctness(inputs, ref_outputs, wrapper_function_name)
@@ -660,82 +672,82 @@ def run_optimization_on_problem(
 # [!!! 新增 !!!] 
 # 添加新的 main() 和 if __name__ == "__main__": 
 # 以调用通用循环，实现后向兼容
-def main():
-    """
-    为原始 GEMM 问题设置参数，并调用通用的优化器。
-    """
-    print("--- Running Original GEMM Problem (Backward-Compatibility) ---")
+# def main():
+#     """
+#     为原始 GEMM 问题设置参数，并调用通用的优化器。
+#     """
+#     print("--- Running Original GEMM Problem (Backward-Compatibility) ---")
     
-    # 1. 设置原始的 GEMM 问题参数
-    N = 8192 # <--- [!!! 新增 !!!] 为 GEMM 定义 N
-    # (如果 config.py 中存在 MATRIX_N，则覆盖)
-    if hasattr(config, 'MATRIX_N'): 
-        N = config.MATRIX_N
+#     # 1. 设置原始的 GEMM 问题参数
+#     N = 8192 # <--- [!!! 新增 !!!] 为 GEMM 定义 N
+#     # (如果 config.py 中存在 MATRIX_N，则覆盖)
+#     if hasattr(config, 'MATRIX_N'): 
+#         N = config.MATRIX_N
             
-    device = torch.device(config.DEVICE)
-    torch.manual_seed(42)
-    A_torch = torch.randn((N, N), dtype=torch.float32, device=device)
-    B_torch = torch.randn((N, N), dtype=torch.float32, device=device)
-    C_ref_torch = torch.matmul(A_torch, B_torch) 
+#     device = torch.device(config.DEVICE)
+#     torch.manual_seed(42)
+#     A_torch = torch.randn((N, N), dtype=torch.float32, device=device)
+#     B_torch = torch.randn((N, N), dtype=torch.float32, device=device)
+#     C_ref_torch = torch.matmul(A_torch, B_torch) 
     
-    inputs = [A_torch, B_torch]
-    ref_outputs = [C_ref_torch]
+#     inputs = [A_torch, B_torch]
+#     ref_outputs = [C_ref_torch]
     
-    problem_name = "gemm_N" + str(N)
-    cpp_source = kernels.CPP_SOURCE
-    initial_cuda_code = kernels.NAIVE_CUDA_SOURCE # <--- 使用 kernels.py 中的基线
-    kernel_name = "gemm_kernel" # __global__ name
-    wrapper_function_name = "gemm_cuda" # C++ wrapper name
-    iteration_rounds = config.ITERATION_ROUNDS
-    history_file_path = config.HISTORY_FILE # 使用 config 中的默认历史文件
+#     problem_name = "gemm_N" + str(N)
+#     cpp_source = kernels.CPP_SOURCE
+#     initial_cuda_code = kernels.NAIVE_CUDA_SOURCE # <--- 使用 kernels.py 中的基线
+#     kernel_name = "gemm_kernel" # __global__ name
+#     wrapper_function_name = "gemm_cuda" # C++ wrapper name
+#     iteration_rounds = config.ITERATION_ROUNDS
+#     history_file_path = config.HISTORY_FILE # 使用 config 中的默认历史文件
 
-    # 2. 调用通用优化器
-    # [!!! 注意 !!!] 
-    # 此处未传递 baseline_time_ms，
-    # 因为旧的 main() 
-    # 在最后才计算它。
-    # 这意味着 _best_stats.json 
-    # 不会在此模式下生成，这是正常的。
-    best_node = run_optimization_on_problem(
-        problem_name=problem_name,
-        cpp_source=cpp_source,
-        initial_cuda_code=initial_cuda_code,
-        inputs=inputs,
-        ref_outputs=ref_outputs,
-        kernel_name=kernel_name,
-        wrapper_function_name=wrapper_function_name,
-        iteration_rounds=iteration_rounds,
-        history_file_path=history_file_path
-        # baseline_time_ms 
-        # 使用默认的 float('inf')
-    )
+#     # 2. 调用通用优化器
+#     # [!!! 注意 !!!] 
+#     # 此处未传递 baseline_time_ms，
+#     # 因为旧的 main() 
+#     # 在最后才计算它。
+#     # 这意味着 _best_stats.json 
+#     # 不会在此模式下生成，这是正常的。
+#     best_node = run_optimization_on_problem(
+#         problem_name=problem_name,
+#         cpp_source=cpp_source,
+#         initial_cuda_code=initial_cuda_code,
+#         inputs=inputs,
+#         ref_outputs=ref_outputs,
+#         kernel_name=kernel_name,
+#         wrapper_function_name=wrapper_function_name,
+#         iteration_rounds=iteration_rounds,
+#         history_file_path=history_file_path
+#         # baseline_time_ms 
+#         # 使用默认的 float('inf')
+#     )
     
-    if 'error' in best_node:
-        print(f"GEMM optimization failed: {best_node.get('error', 'Unknown')}")
-        return
+#     if 'error' in best_node:
+#         print(f"GEMM optimization failed: {best_node.get('error', 'Unknown')}")
+#         return
     
-    if best_node.get('time_ms') is None or best_node['time_ms'] == float('inf'):
-         print("Optimization finished, but no successful kernel was found.")
-         return
+#     if best_node.get('time_ms') is None or best_node['time_ms'] == float('inf'):
+#          print("Optimization finished, but no successful kernel was found.")
+#          return
 
-    # 3. 运行原始的最终基准测试 (来自旧 main())
-    print("\n--- Running Final Benchmark (GEMM vs PyTorch) ---")
+#     # 3. 运行原始的最终基准测试 (来自旧 main())
+#     print("\n--- Running Final Benchmark (GEMM vs PyTorch) ---")
     
-    try:
-        pytorch_time_ms = cuda_utils.get_pytorch_performance(A_torch, B_torch)
-        print(f"PyTorch (torch.matmul) performance: {pytorch_time_ms:.3f} ms")
-        print(f"Our best LLM-optimized kernel: {best_node['time_ms']:.3f} ms")
+#     try:
+#         pytorch_time_ms = cuda_utils.get_pytorch_performance(A_torch, B_torch)
+#         print(f"PyTorch (torch.matmul) performance: {pytorch_time_ms:.3f} ms")
+#         print(f"Our best LLM-optimized kernel: {best_node['time_ms']:.3f} ms")
         
-        speedup = pytorch_time_ms / best_node['time_ms']
-        if best_node['time_ms'] < pytorch_time_ms:
-            print(f"SUCCESS: Optimized kernel is {speedup:.2f}x faster than PyTorch!")
-        else:
-            print(f"Result: PyTorch is {1/speedup:.2f}x faster.")
-    except AttributeError:
-         print("Warning: cuda_utils.get_pytorch_performance not found. Skipping final comparison.")
-    except Exception as e:
-         print(f"Error during final benchmark: {e}")
+#         speedup = pytorch_time_ms / best_node['time_ms']
+#         if best_node['time_ms'] < pytorch_time_ms:
+#             print(f"SUCCESS: Optimized kernel is {speedup:.2f}x faster than PyTorch!")
+#         else:
+#             print(f"Result: PyTorch is {1/speedup:.2f}x faster.")
+#     except AttributeError:
+#          print("Warning: cuda_utils.get_pytorch_performance not found. Skipping final comparison.")
+#     except Exception as e:
+#          print(f"Error during final benchmark: {e}")
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

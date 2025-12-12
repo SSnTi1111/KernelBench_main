@@ -1,6 +1,7 @@
 import torch
 from torch.utils.cpp_extension import load_inline
 import os
+import io
 import re
 import config
 import time
@@ -10,7 +11,11 @@ import csv
 import io         
 import json       
 import sys        
+import shutil
 import importlib.util 
+import tempfile 
+import contextlib
+import warnings
 import traceback  
 import numpy as np  
 from typing import Dict, List # <--- [修复] 添加 List
@@ -74,89 +79,237 @@ except Exception as e:
     sys.exit(1)
 """
 # ^^^ --- 模板结束 --- ^^^
+# # 返回cuda_code 模块
+# def load_gemm_module(cuda_code):
+#     global _gemm_module
+#     _gemm_module = 
 
+# class FDCapturer:
+#     def __init__(self):
+#         self._stdout_fd = sys.stdout.fileno()
+#         self._stderr_fd = sys.stderr.fileno()
+#         self._saved_stdout_fd = os.dup(self._stdout_fd)
+#         self._saved_stderr_fd = os.dup(self._stderr_fd)
+#         self._temp_file = tempfile.TemporaryFile(mode='w+b') # 使用二进制模式避免编码问题
+
+#     def __enter__(self):
+#         # 刷新 Python 缓冲区，防止之前的输出混入
+#         sys.stdout.flush()
+#         sys.stderr.flush()
+#         # 将 stdout (1) and stderr (2) 重定向到临时文件
+#         os.dup2(self._temp_file.fileno(), self._stdout_fd)
+#         os.dup2(self._temp_file.fileno(), self._stderr_fd)
+#         return self
+
+#     def __exit__(self, exc_type, exc_val, exc_tb):
+#         # 再次刷新
+#         sys.stdout.flush()
+#         sys.stderr.flush()
+#         # 恢复标准输出/错误
+#         os.dup2(self._saved_stdout_fd, self._stdout_fd)
+#         os.dup2(self._saved_stderr_fd, self._stderr_fd)
+#         os.close(self._saved_stdout_fd)
+#         os.close(self._saved_stderr_fd)
+    
+#     def get_output(self):
+#         self._temp_file.seek(0)
+#         # 读取并解码
+#         return self._temp_file.read().decode('utf-8', errors='replace')
+
+# # --- 修改后的 load_module ---
+# def load_module(cuda_code, module_name, init_inputs):
+#     shutil.rmtree(os.path.expanduser('~/.cache/torch_extensions'), ignore_errors=True)# IMPORTANT：调用load_module之前强制清空缓存，因为pytorch会根据cuda_code中load_inline中的name选项是否一致判断这个是否之前编译过，如果编译过就不会编译导致获取不到PTSAX信息（但是实际上为了获取PTXAS信息重新编译会影响整个流程的时间）
+#     TEST_NN_MODEL_NAME = 'ModelNew'
+#     model_instance = None
+#     captured_log = ""
+    
+#     try:
+#         with tempfile.TemporaryDirectory() as temp_dir:
+#             # 技巧：为了每次强制触发编译（获取PTXAS信息），
+#             # 可以在这里动态修改 cuda_code 中的 name 参数，或者让 load_inline 的 name 随时间变化。
+#             # 这里假设外部传入的 cuda_code 已经是唯一的，或者我们依赖清理缓存。
+            
+#             temp_file = os.path.join(temp_dir, "cuda_code_gen.py")
+#             with open(temp_file, "w") as f:
+#                 f.write(cuda_code)
+
+#             spec = importlib.util.spec_from_file_location(TEST_NN_MODEL_NAME, temp_file)
+#             if spec is None:
+#                 print("ERROR in load_module: spec is None")
+#                 return None, "", ""
+
+#             module = importlib.util.module_from_spec(spec)
+#             sys.modules[TEST_NN_MODEL_NAME] = module
+
+#             # ---------- 核心修改：使用 FD Capturer 替代 redirect_stdout ----------
+#             capturer = FDCapturer()
+#             try:
+#                 with capturer:
+#                     # exec_module 会执行 load_inline，从而触发 nvcc
+#                     spec.loader.exec_module(module)
+#             except Exception as e:
+#                 # 即使出错，也要把捕获到的编译器报错拿出来
+#                 print(f"Compilation/Execution Error: {e}")
+            
+#             # 获取所有底层输出 (nvcc output, ninja output, etc.)
+#             captured_log = capturer.get_output()
+
+#             model_class = getattr(module, TEST_NN_MODEL_NAME, None)
+#             if model_class is None:
+#                 print("ERROR: Model class not found")
+#                 return None, captured_log, captured_log
+
+#             # 实例化模型
+#             try:
+#                 if init_inputs is not None:
+#                     if isinstance(init_inputs, (list, tuple)):
+#                         model_instance = model_class(*init_inputs)
+#                     elif isinstance(init_inputs, dict):
+#                         model_instance = model_class(**init_inputs)
+#                     else:
+#                         model_instance = model_class(init_inputs)
+#                 else:
+#                     model_instance = model_class()
+#             except Exception as e:
+#                 print(f"Instantiation Error: {e}")
+
+#     except Exception as e:
+#         print(f"General Error: {e}")
+    
+#     # 为了兼容你原来的返回格式，这里把 log 同时赋给 stdout 和 stderr
+#     # 因为 nvcc 的输出通常混合在一起，FD 捕获时也是混合的
+#     return model_instance, captured_log, captured_log
 
 # [!!! 已更新 !!!] 接受 wrapper_function_name
-def load_gemm_module(cpp_source, cuda_source, module_name="gemm_evolved_default", wrapper_function_name="gemm_cuda"):
-    """
-    (此函数已更新)
-    使用PyTorch的JIT编译C++/CUDA源码。
-    返回 (module, stdout_log, stderr_log)
-    """
-    global _gemm_module
-    
-    block_size = 16 
+def load_module(cuda_code, module_name,init_inputs):
+    shutil.rmtree(os.path.expanduser('~/.cache/torch_extensions'), ignore_errors=True)# IMPORTANT：调用load_module之前强制清空缓存，因为pytorch会根据cuda_code中load_inline中的name选项是否一致判断这个是否之前编译过，如果编译过就不会编译导致获取不到PTSAX信息（但是实际上为了获取PTXAS信息重新编译会影响整个流程的时间）
+    TEST_NN_MODEL_NAME = 'ModelNew'
     try:
-        match = re.search(r'#define\s+BLOCK_SIZE\s+(\d+)', cuda_source)
-        if match:
-            block_size = int(match.group(1))
-    except:
-        pass 
-        
-    cuda_flags = [
-        '-O3',
-        '-allow-unsupported-compiler',
-        f'-DBLOCK_SIZE={block_size}',
-        '--ptxas-options=-v', # <--- 关键：请求 ptxas 详细输出
-        '-gencode=arch=compute_80,code=sm_80' 
-    ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_file = os.path.join(temp_dir, "cuda_code1.py")
+            with open(temp_file, "w") as f:
+                f.write(cuda_code)
 
-    original_stdout_fd = os.dup(1)
-    original_stderr_fd = os.dup(2)
-    r_out, w_out = os.pipe()
-    r_err, w_err = os.pipe()
-    os.dup2(w_out, 1)
-    os.dup2(w_err, 2)
-    os.close(w_out)
-    os.close(w_err)
+            spec = importlib.util.spec_from_file_location(TEST_NN_MODEL_NAME, temp_file)
+            if spec is None:
+                print("ERROR in load_module 1")
 
-    stdout_log = ""
-    stderr_log = ""
-    _module = None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[TEST_NN_MODEL_NAME] = module
+            # ---------- 执行模块 & 捕获所有输出 ----------
+            stdout_capture = io.StringIO()
+            stderr_capture = io.StringIO()  
+            try:
+                with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+                    spec.loader.exec_module(module)
+            except Exception as e:
+                print(e)
+                print("ERROR in load_module 2")
 
-    try:
-        _module = load_inline(
-            name=module_name, 
-            cpp_sources=cpp_source,
-            cuda_sources=cuda_source,
-            functions=[wrapper_function_name], # <--- [!!! 已更新 !!!] 使用参数
-            verbose=True, # <--- 关键：必须为 True 才能捕获日志
-            extra_cflags=["-O3"],
-            extra_cuda_cflags=cuda_flags
-        )
-        
-        os.dup2(original_stdout_fd, 1)
-        os.dup2(original_stderr_fd, 2)
-        stdout_bytes = os.read(r_out, 100000)
-        stderr_bytes = os.read(r_err, 100000)
-        stdout_log = stdout_bytes.decode('utf-8', errors='ignore')
-        stderr_log = stderr_bytes.decode('utf-8', errors='ignore')
-        
+            model_class = getattr(module, TEST_NN_MODEL_NAME, None)
+            if model_class is None:
+                print("ERROR in load_module 3")
+
+            # 实例化模型
+            try:
+                if init_inputs is not None:
+                    if isinstance(init_inputs, (list, tuple)):
+                        model_instance = model_class(*init_inputs)
+                    elif isinstance(init_inputs, dict):
+                        model_instance = model_class(**init_inputs)
+                    else:
+                        # 单值初始化
+                        model_instance = model_class(init_inputs)
+                else:
+                    # 无初始化参数
+                    model_instance = model_class()
+            except Exception as e:
+                print(e)
+                print("ERROR in load_module 4")
     except Exception as e:
-        os.dup2(original_stdout_fd, 1)
-        os.dup2(original_stderr_fd, 2)
-        stdout_bytes = os.read(r_out, 100000)
-        stderr_bytes = os.read(r_err, 100000)
-        stdout_log = stdout_bytes.decode('utf-8', errors='ignore')
-        stderr_log = stderr_bytes.decode('utf-8', errors='ignore')
+        print(e)
+        print("ERROR in load_module 5")
+    return model_instance,stdout_capture,stderr_capture
+
+#     """
+#     (此函数已更新)
+#     使用PyTorch的JIT编译C++/CUDA源码。
+#     返回 (module, stdout_log, stderr_log)
+#     """
+#     global _gemm_module
+    
+#     block_size = 16 
+#     try:
+#         match = re.search(r'#define\s+BLOCK_SIZE\s+(\d+)', cuda_source)
+#         if match:
+#             block_size = int(match.group(1))
+#     except:
+#         pass 
         
-        detailed_error_msg = f"""CUDA C++ 扩展编译失败: {e}
---- [ NVCC/Ninja STDOUT ] ---
-{stdout_log}
---- [ NVCC/Ninja STDERR ] ---
-{stderr_log}
------------------------------
-"""
-        raise RuntimeError(detailed_error_msg)
+#     cuda_flags = [
+#         '-O3',
+#         '-allow-unsupported-compiler',
+#         f'-DBLOCK_SIZE={block_size}',
+#         '--ptxas-options=-v', # <--- 关键：请求 ptxas 详细输出
+#         '-gencode=arch=compute_80,code=sm_80' 
+#     ]
 
-    finally:
-        os.close(original_stdout_fd)
-        os.close(original_stderr_fd)
-        os.close(r_out)
-        os.close(r_err)
+#     original_stdout_fd = os.dup(1)
+#     original_stderr_fd = os.dup(2)
+#     r_out, w_out = os.pipe()
+#     r_err, w_err = os.pipe()
+#     os.dup2(w_out, 1)
+#     os.dup2(w_err, 2)
+#     os.close(w_out)
+#     os.close(w_err)
 
-    _gemm_module = _module
-    return _gemm_module, stdout_log, stderr_log
+#     stdout_log = ""
+#     stderr_log = ""
+#     _module = None
+
+#     try:
+#         _module = load_inline(
+#             name=module_name, 
+#             cpp_sources=cpp_source,
+#             cuda_sources=cuda_source,
+#             functions=[wrapper_function_name], # <--- [!!! 已更新 !!!] 使用参数
+#             verbose=True, # <--- 关键：必须为 True 才能捕获日志
+#             extra_cflags=["-O3"],
+#             extra_cuda_cflags=cuda_flags
+#         )
+        
+#         os.dup2(original_stdout_fd, 1)
+#         os.dup2(original_stderr_fd, 2)
+#         stdout_bytes = os.read(r_out, 100000)
+#         stderr_bytes = os.read(r_err, 100000)
+#         stdout_log = stdout_bytes.decode('utf-8', errors='ignore')
+#         stderr_log = stderr_bytes.decode('utf-8', errors='ignore')
+        
+#     except Exception as e:
+#         os.dup2(original_stdout_fd, 1)
+#         os.dup2(original_stderr_fd, 2)
+#         stdout_bytes = os.read(r_out, 100000)
+#         stderr_bytes = os.read(r_err, 100000)
+#         stdout_log = stdout_bytes.decode('utf-8', errors='ignore')
+#         stderr_log = stderr_bytes.decode('utf-8', errors='ignore')
+        
+#         detailed_error_msg = f"""CUDA C++ 扩展编译失败: {e}
+# --- [ NVCC/Ninja STDOUT ] ---
+# {stdout_log}
+# --- [ NVCC/Ninja STDERR ] ---
+# {stderr_log}
+# -----------------------------
+# """
+#         raise RuntimeError(detailed_error_msg)
+
+#     finally:
+#         os.close(original_stdout_fd)
+#         os.close(original_stderr_fd)
+#         os.close(r_out)
+#         os.close(r_err)
+
+#     _gemm_module = _module
+#     return _gemm_module, stdout_log, stderr_log
 
 # [!!! 已更新 !!!] 接受通用输入
 def run_gemm(inputs: List[torch.Tensor], wrapper_function_name: str):
