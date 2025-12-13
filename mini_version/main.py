@@ -168,7 +168,7 @@ def run_optimization_on_problem(
     initial_cuda_code,
     inputs, 
     init_inputs,
-    ref_outputs: List[torch.Tensor],
+    ref_outputs,
     # kernel_name: str,           # __global__ 函数名
     # wrapper_function_name: str, # C++ wrapper 函数名
     iteration_rounds,
@@ -238,10 +238,10 @@ def run_optimization_on_problem(
                 # wrapper_function_name=wrapper_function_name # <--- [!!! 已更新 !!!]
             )
             print("Baseline kernel compiled successfully.")
-            best_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log.getvalue() + stderr_log.getvalue())
+            best_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)
             
             # [!!! 已更新 !!!]
-            is_correct = cuda_utils.check_correctness(inputs, ref_outputs, wrapper_function_name)
+            is_correct = cuda_utils.check_correctness(init_inputs, inputs, ref_outputs, module)# liuxitai:到这里了
             if not is_correct:
                 print("❌ Baseline kernel is INCORRECT. Exiting.")
                 return {"error": "Baseline kernel incorrect."} # <--- [!!! 已更新 !!!]
