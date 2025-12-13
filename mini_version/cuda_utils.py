@@ -217,15 +217,19 @@ class FDCapturer:
 
 # --- 2. 修改 load_module ---
 def load_module(cuda_code, module_name, init_inputs):
-    # 强制清理缓存
+    # 1. 强制清理 PyTorch 扩展编译缓存
     shutil.rmtree(os.path.expanduser('~/.cache/torch_extensions'), ignore_errors=True)
     
     TEST_NN_MODEL_NAME = 'ModelNew'
     model_instance = None
-    captured_log = ""  # 用于存储捕获的日志
+    captured_log = ""
+    
+    # [!!! 修复 1 !!!] 使用持久化文件路径，而不是临时文件
+    # module_name 在外部循环中通常是 "ProblemName_RoundNumber"，所以是唯一的
+    file_path = os.path.abspath(f"{module_name}.py")
     
     try:
-        # --- 动态重命名逻辑 (你已经做对的部分) ---
+        # --- 动态重命名逻辑 (保持不变) ---
         timestamp = int(time.time() * 1000)
         pattern = r"(name\s*=\s*['\"])([\w_]+)(['\"])"
         
@@ -238,62 +242,60 @@ def load_module(cuda_code, module_name, init_inputs):
             return f"{prefix}{new_name}{suffix}"
             
         cuda_code_modified = re.sub(pattern, replace_func, cuda_code, count=1)
-        
         if cuda_code_modified == cuda_code:
             print("[WARN] Could not inject unique name. PTXAS capture might fail.")
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_file = os.path.join(temp_dir, "cuda_code_gen.py")
-            with open(temp_file, "w") as f:
-                f.write(cuda_code_modified)
+        # [!!! 修复 1 !!!] 写入到当前目录下的持久文件
+        with open(file_path, "w") as f:
+            f.write(cuda_code_modified)
 
-            spec = importlib.util.spec_from_file_location(TEST_NN_MODEL_NAME, temp_file)
-            if spec is None:
-                print("ERROR in load_module: spec is None")
-                return None, "", ""
+        # 加载模块
+        spec = importlib.util.spec_from_file_location(TEST_NN_MODEL_NAME, file_path)
+        if spec is None:
+            print("ERROR in load_module: spec is None")
+            return None, "", ""
 
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[TEST_NN_MODEL_NAME] = module
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[TEST_NN_MODEL_NAME] = module
 
-            # ---------- 核心修改：使用 FDCapturer 替代 contextlib ----------
-            capturer = FDCapturer()
+        # ---------- 编译 & 捕获输出 (保持不变) ----------
+        capturer = FDCapturer()
+        try:
+            with capturer:
+                spec.loader.exec_module(module)
+        except Exception as e:
+            print(f"Compilation Error during load_module: {e}")
+        
+        captured_log = capturer.get_output()
+        
+        # 实例化模型
+        model_class = getattr(module, TEST_NN_MODEL_NAME, None)
+        if model_class is None:
+            print("ERROR: Model class not found")
+        else:
             try:
-                # 开始捕获底层输出
-                with capturer:
-                    spec.loader.exec_module(module)
-            except Exception as e:
-                # 即使编译出错，也要先退出 capturer 上下文以恢复 stdout 显示报错，
-                # 但这里我们在 with 块结束后自动恢复，所以可以安全捕获异常。
-                print(f"Compilation Error during load_module: {e}")
-                # 依然尝试获取已经产生的报错日志
-            
-            # 获取捕获的内容
-            captured_log = capturer.get_output()
-            
-            # ... (后续实例化逻辑保持不变) ...
-            model_class = getattr(module, TEST_NN_MODEL_NAME, None)
-            if model_class is None:
-                print("ERROR: Model class not found")
-            else:
-                try:
-                    if init_inputs is not None:
-                        if isinstance(init_inputs, (list, tuple)):
-                            model_instance = model_class(*init_inputs)
-                        elif isinstance(init_inputs, dict):
-                            model_instance = model_class(**init_inputs)
-                        else:
-                            model_instance = model_class(init_inputs)
+                if init_inputs is not None:
+                    if isinstance(init_inputs, (list, tuple)):
+                        model_instance = model_class(*init_inputs)
+                    elif isinstance(init_inputs, dict):
+                        model_instance = model_class(**init_inputs)
                     else:
-                        model_instance = model_class()
-                except Exception as e:
-                    print(f"Instantiation Error: {e}")
+                        model_instance = model_class(init_inputs)
+                else:
+                    model_instance = model_class()
+                
+                # [!!! 修复 2 !!!] 手动给实例绑定 __file__ 属性
+                # 这样外部调用 module.__file__ 时就能获取到正确的文件路径
+                model_instance.__file__ = file_path
+                
+            except Exception as e:
+                print(f"Instantiation Error: {e}")
 
     except Exception as e:
         print(f"General Error inside load_module: {e}")
         traceback.print_exc()
     
-    # 将捕获的同一个日志同时作为 stdout 和 stderr 返回
-    # 因为 nvcc 的输出通常混合在一起，FD 捕获时也是混合的
+    # 返回实例和日志
     return model_instance, captured_log, captured_log
 
 # [!!! 已更新 !!!] 接受 wrapper_function_name
@@ -428,7 +430,7 @@ def load_module(cuda_code, module_name, init_inputs):
 #     return _gemm_module, stdout_log, stderr_log
 
 # [!!! 已更新 !!!] 接受通用输入
-def run_gemm(init_inputs, inputs, module):
+def run_gemm(inputs, module):
     """
     (此函数已更新)
     运行当前加载的模块。
@@ -442,7 +444,7 @@ def run_gemm(init_inputs, inputs, module):
 
 
 
-def check_correctness(init_inputs, inputs, ref_outputs, module):
+def check_correctness(inputs, ref_outputs, module):
     """
     (此函数已更新)
     检查通用内核的正确性。
@@ -454,7 +456,7 @@ def check_correctness(init_inputs, inputs, ref_outputs, module):
         # gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
         # gpu_ref_outputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in ref_outputs]
 
-        C_evolved_outputs = run_gemm(init_inputs, inputs, module)
+        C_evolved_outputs = run_gemm(inputs, module)
         
         # 确保 C_evolved_outputs 是一个列表，以便进行 zip
         # if not isinstance(C_evolved_outputs, (list, tuple)):
@@ -684,7 +686,7 @@ def parse_ptxas_info(log_str: str) -> Dict[str, float]:
 
 
 # vvv --- [!!! 已更新 !!!] 真实 NCU 分析器 (现在是通用的) --- vvv
-def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, wrapper_function_name: str, inputs: List[torch.Tensor]) -> Dict[str, float]:
+def get_real_ncu_metrics(module_path, module_name, inputs) -> Dict[str, float]:
     """
     动态创建一个目标脚本，运行 ncu，解析 CSV 输出，并返回指标。
     [!!! 已更新 !!!] 接受通用输入和内核/wrapper 名称。
@@ -710,8 +712,8 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
             'python', 
             target_script_path,
             module_path, 
-            module_name, 
-            wrapper_function_name # <--- [!!! 已更新 !!!]
+            module_name
+            # wrapper_function_name # <--- [!!! 已更新 !!!]
             # [!!! 已移除 !!!] str(matrix_n)
         ]
         
@@ -810,19 +812,19 @@ def get_real_ncu_metrics(module_path: str, module_name: str, kernel_name: str, w
 
 
 # vvv --- [!!! 已更新 !!!] 真实性能评测函数 (现在是通用的) --- vvv
-def benchmark_kernel(inputs: List[torch.Tensor], wrapper_function_name: str, warmup_runs=5, benchmark_runs=10):
+def benchmark_kernel(inputs, module, warmup_runs=5, benchmark_runs=10):
     """
     对当前加载的 _gemm_module 执行预热和基准测试。
     [!!! 已更新 !!!] 接受通用输入。
     """
-    if _gemm_module is None:
-        raise RuntimeError("模块未编译。")
+    # if _gemm_module is None:
+    #     raise RuntimeError("模块未编译。")
     
-    gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
+    # gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
 
     print(f"Warming up evolved kernel ({warmup_runs} runs)...")
     for _ in range(warmup_runs):
-        _ = run_gemm(gpu_inputs, wrapper_function_name)
+        _ = run_gemm(inputs, module)
     torch.cuda.synchronize()
 
     # 测量
@@ -831,7 +833,7 @@ def benchmark_kernel(inputs: List[torch.Tensor], wrapper_function_name: str, war
     
     start.record()
     for _ in range(benchmark_runs):
-        _ = run_gemm(gpu_inputs, wrapper_function_name)
+        _ = run_gemm(inputs, module)
     end.record()
     
     torch.cuda.synchronize()

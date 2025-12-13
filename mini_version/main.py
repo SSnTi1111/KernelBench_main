@@ -241,22 +241,22 @@ def run_optimization_on_problem(
             best_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)
             
             # [!!! 已更新 !!!]
-            is_correct = cuda_utils.check_correctness(init_inputs, inputs, ref_outputs, module)# liuxitai:到这里了
+            is_correct = cuda_utils.check_correctness(inputs, ref_outputs, module)
             if not is_correct:
                 print("❌ Baseline kernel is INCORRECT. Exiting.")
                 return {"error": "Baseline kernel incorrect."} # <--- [!!! 已更新 !!!]
                 
             print("Baseline kernel is correct. Benchmarking...")
             # [!!! 已更新 !!!]
-            best_time_ms = cuda_utils.benchmark_kernel(inputs, wrapper_function_name)
+            best_time_ms = cuda_utils.benchmark_kernel(inputs, module)# liuxitai:到这里了
             
             print("Analyzing baseline kernel with NCU (this may take a while)...")
             # [!!! 已更新 !!!]
             best_ncu_metrics = cuda_utils.get_real_ncu_metrics(
                 module.__file__, 
                 current_module_name, 
-                kernel_name,           # <--- [!!! 已更新 !!!]
-                wrapper_function_name, # <--- [!!! 已更新 !!!]
+                # kernel_name,           # <--- [!!! 已更新 !!!]
+                # wrapper_function_name, # <--- [!!! 已更新 !!!]
                 inputs                 # <--- [!!! 已更新 !!!]
             )
             current_ncu_metrics = best_ncu_metrics 

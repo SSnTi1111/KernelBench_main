@@ -270,7 +270,7 @@
     "status": "Success"
   },
   "21_Sigmoid": {
-    "baseline_ms": 7.433052368164063,
+    "baseline_ms": 7.432437744140625,
     "best_cuda_ms": Infinity,
     "speedup": 0.0,
     "status": "Failed optimization loop: Baseline failed: "
