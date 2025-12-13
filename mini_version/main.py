@@ -248,7 +248,7 @@ def run_optimization_on_problem(
                 
             print("Baseline kernel is correct. Benchmarking...")
             # [!!! 已更新 !!!]
-            best_time_ms = cuda_utils.benchmark_kernel(inputs, module)# liuxitai:到这里了
+            best_time_ms = cuda_utils.benchmark_kernel(inputs, module)
             
             print("Analyzing baseline kernel with NCU (this may take a while)...")
             # [!!! 已更新 !!!]
@@ -259,7 +259,7 @@ def run_optimization_on_problem(
                 # wrapper_function_name, # <--- [!!! 已更新 !!!]
                 inputs                 # <--- [!!! 已更新 !!!]
             )
-            current_ncu_metrics = best_ncu_metrics 
+            current_ncu_metrics = best_ncu_metrics # liuxitai:到这里目前已经改好了
             
             history_entry = {
                 "round": 0, "goal": "Baseline", "status": "Success",

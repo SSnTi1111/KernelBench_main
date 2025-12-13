@@ -16,7 +16,8 @@ import importlib.util
 import tempfile 
 import contextlib
 import warnings
-import traceback  
+import traceback 
+import weakref 
 import numpy as np  
 from typing import Dict, List # <--- [修复] 添加 List
 
@@ -31,14 +32,13 @@ import os
 import sys
 import traceback
 
-# 从命令行参数获取路径、模块名和 wrapper 名
+# 1. 获取命令行参数 (只期望 2 个参数: 路径和模块名)
 MODULE_PATH = sys.argv[1]
 MODULE_NAME = sys.argv[2]
-WRAPPER_FUNCTION_NAME = sys.argv[3]
-# [!!! 已移除 !!!] N = int(sys.argv[3])
+# WRAPPER_FUNCTION_NAME = sys.argv[3] # <--- [已移除] 不再需要
 
 try:
-    # 加载由评估器编译好的 .so 模块
+    # 2. 加载模块
     spec = importlib.util.spec_from_file_location(MODULE_NAME, MODULE_PATH)
     if spec is None:
         print(f"Error: 无法从 {MODULE_PATH} 加载 spec", file=sys.stderr)
@@ -47,31 +47,51 @@ try:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    # [!!! 已更新 !!!] 从文件加载真实的输入数据
+    # 3. 准备设备和数据
     torch.cuda.set_device(0)
     device = torch.device("cuda")
     
     try:
         # 从保存的文件中加载输入
         inputs = torch.load("_ncu_inputs.pt")
+        # 确保输入移动到 GPU
         gpu_inputs = [t.to(device) if isinstance(t, torch.Tensor) else t for t in inputs]
     except Exception as e:
         print(f"Failed to load _ncu_inputs.pt: {e}", file=sys.stderr)
         traceback.print_exc()
         sys.exit(1)
 
+    # 4. 实例化模型 (ModelNew)
+    # 注意：这里假设 ModelNew 的 __init__ 不需要参数，或者参数已硬编码。
+    # 对于 Level 1 的问题，生成的代码通常遵循这一模式。
+    if not hasattr(module, 'ModelNew'):
+        print(f"Error: 模块 {MODULE_NAME} 中未找到 'ModelNew' 类", file=sys.stderr)
+        sys.exit(1)
+        
+    try:
+        model = module.ModelNew()
+        model.to(device)
+        model.eval() # 切换到评估模式 (影响某些 layers 如 Dropout/BatchNorm)
+    except Exception as e:
+        print(f"Error: 实例化 ModelNew 失败: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
+
     torch.cuda.synchronize(device)
     
-    # --- 这是 NCU 将重点分析的目标 ---
-    # 仅运行一次，不进行预热
+    # --- 5. 运行目标 (NCU 分析区域) ---
+    # 仅运行一次，不进行预热 (NCU 不需要预热，且 launch-count=1)
     
-    # [!!! 已更新 !!!] 使用 getattr 动态调用 wrapper
-    wrapper_func = getattr(module, WRAPPER_FUNCTION_NAME)
-    wrapper_func(*gpu_inputs)
+    try:
+        model(*gpu_inputs)
+    except Exception as e:
+        print(f"Error: 模型执行失败: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
+        
     # --- 结束分析 ---
     
     torch.cuda.synchronize(device)
-    # print("NCU target run complete.")
 
 except Exception as e:
     print(f"NCU target script failed: {e}", file=sys.stderr)
@@ -79,6 +99,7 @@ except Exception as e:
     sys.exit(1)
 """
 # ^^^ --- 模板结束 --- ^^^
+
 # # 返回cuda_code 模块
 # def load_gemm_module(cuda_code):
 #     global _gemm_module
@@ -217,19 +238,18 @@ class FDCapturer:
 
 # --- 2. 修改 load_module ---
 def load_module(cuda_code, module_name, init_inputs):
-    # 1. 强制清理 PyTorch 扩展编译缓存
+    # 1. 强制清理缓存
     shutil.rmtree(os.path.expanduser('~/.cache/torch_extensions'), ignore_errors=True)
     
     TEST_NN_MODEL_NAME = 'ModelNew'
     model_instance = None
     captured_log = ""
     
-    # [!!! 修复 1 !!!] 使用持久化文件路径，而不是临时文件
-    # module_name 在外部循环中通常是 "ProblemName_RoundNumber"，所以是唯一的
+    # [持久化路径] 必须使用绝对路径，因为 module.__file__ 需要它
     file_path = os.path.abspath(f"{module_name}.py")
     
     try:
-        # --- 动态重命名逻辑 (保持不变) ---
+        # --- 动态重命名逻辑 ---
         timestamp = int(time.time() * 1000)
         pattern = r"(name\s*=\s*['\"])([\w_]+)(['\"])"
         
@@ -238,64 +258,83 @@ def load_module(cuda_code, module_name, init_inputs):
             old_name = match.group(2)
             suffix = match.group(3)
             new_name = f"{old_name}_{timestamp}"
-            print(f"[DEBUG] Renaming extension for compilation: {old_name} -> {new_name}")
+            # print(f"[DEBUG] Renaming: {old_name} -> {new_name}")
             return f"{prefix}{new_name}{suffix}"
             
         cuda_code_modified = re.sub(pattern, replace_func, cuda_code, count=1)
-        if cuda_code_modified == cuda_code:
-            print("[WARN] Could not inject unique name. PTXAS capture might fail.")
-
-        # [!!! 修复 1 !!!] 写入到当前目录下的持久文件
+        
+        # 2. 写入文件
         with open(file_path, "w") as f:
             f.write(cuda_code_modified)
 
-        # 加载模块
+        # 3. 加载模块
         spec = importlib.util.spec_from_file_location(TEST_NN_MODEL_NAME, file_path)
         if spec is None:
             print("ERROR in load_module: spec is None")
+            # 如果加载失败，立即清理文件
+            if os.path.exists(file_path):
+                os.remove(file_path)
             return None, "", ""
 
         module = importlib.util.module_from_spec(spec)
         sys.modules[TEST_NN_MODEL_NAME] = module
 
-        # ---------- 编译 & 捕获输出 (保持不变) ----------
+        # 4. 编译 & 捕获输出
         capturer = FDCapturer()
         try:
             with capturer:
                 spec.loader.exec_module(module)
         except Exception as e:
-            print(f"Compilation Error during load_module: {e}")
+            print(f"Compilation Error: {e}")
+            # 编译失败也清理文件
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            # 依然返回日志供分析
+            return None, capturer.get_output(), capturer.get_output()
         
         captured_log = capturer.get_output()
         
-        # 实例化模型
+        # 5. 实例化模型
         model_class = getattr(module, TEST_NN_MODEL_NAME, None)
         if model_class is None:
             print("ERROR: Model class not found")
-        else:
-            try:
-                if init_inputs is not None:
-                    if isinstance(init_inputs, (list, tuple)):
-                        model_instance = model_class(*init_inputs)
-                    elif isinstance(init_inputs, dict):
-                        model_instance = model_class(**init_inputs)
-                    else:
-                        model_instance = model_class(init_inputs)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            return None, captured_log, captured_log
+
+        try:
+            if init_inputs is not None:
+                if isinstance(init_inputs, (list, tuple)):
+                    model_instance = model_class(*init_inputs)
+                elif isinstance(init_inputs, dict):
+                    model_instance = model_class(**init_inputs)
                 else:
-                    model_instance = model_class()
-                
-                # [!!! 修复 2 !!!] 手动给实例绑定 __file__ 属性
-                # 这样外部调用 module.__file__ 时就能获取到正确的文件路径
-                model_instance.__file__ = file_path
-                
-            except Exception as e:
-                print(f"Instantiation Error: {e}")
+                    model_instance = model_class(init_inputs)
+            else:
+                model_instance = model_class()
+            
+            # [!!! 关键修复 1 !!!] 绑定 __file__ 属性，供 main.py 中的 NCU 使用
+            model_instance.__file__ = file_path
+            
+            # [!!! 关键修复 2 !!!] 注册自动清理钩子
+            # 当 model_instance 被 del 或 垃圾回收时，自动执行 lambda 删除文件
+            weakref.finalize(
+                model_instance, 
+                lambda p=file_path: os.remove(p) if os.path.exists(p) else None
+            )
+            
+        except Exception as e:
+            print(f"Instantiation Error: {e}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            return None, captured_log, captured_log
 
     except Exception as e:
         print(f"General Error inside load_module: {e}")
         traceback.print_exc()
+        if os.path.exists(file_path):
+            os.remove(file_path)
     
-    # 返回实例和日志
     return model_instance, captured_log, captured_log
 
 # [!!! 已更新 !!!] 接受 wrapper_function_name
