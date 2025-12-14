@@ -475,7 +475,7 @@ def run_gemm(inputs, module):
     运行当前加载的模块。
     """
     if module is None:
-        raise RuntimeError("模块未编译。请先调用 load_gemm_module()")
+        raise RuntimeError("模块未编译。请先调用 load_module()")
     
     # 使用 getattr 动态调用 wrapper
     # wrapper_func = getattr(_gemm_module, wrapper_function_name)
