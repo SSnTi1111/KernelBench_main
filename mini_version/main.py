@@ -12,6 +12,39 @@ import sys
 import json 
 from typing import List, Dict # [!!! 新增 !!!]
 import gc
+try:
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity
+    HAS_EMBEDDING_LIB = True
+except ImportError:
+    print("[Warning] 'sentence_transformers' or 'sklearn' not found. Embedding similarity check will be disabled.")
+    HAS_EMBEDDING_LIB = False
+
+# [!!! 新增 !!!] 全局 Embedding 模型实例 (单例模式)
+_EMBEDDING_MODEL = None
+EMBEDDING_MODEL_PATH = "/home/lxt/models/all-MiniLM-L6-v2" # 用户指定的路径
+
+def get_embedding_model():
+    """
+    懒加载 Embedding 模型，确保只加载一次。
+    """
+    global _EMBEDDING_MODEL
+    if not HAS_EMBEDDING_LIB:
+        return None
+
+    if _EMBEDDING_MODEL is None:
+        try:
+            if os.path.exists(EMBEDDING_MODEL_PATH):
+                # print(f"[System] Loading embedding model from {EMBEDDING_MODEL_PATH} ...")
+                _EMBEDDING_MODEL = SentenceTransformer(EMBEDDING_MODEL_PATH)
+            else:
+                print(f"[Warning] Embedding model path not found: {EMBEDDING_MODEL_PATH}. Falling back to exact match.")
+                # 也可以尝试自动下载: _EMBEDDING_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
+        except Exception as e:
+            print(f"[Warning] Failed to load embedding model: {e}")
+            
+    return _EMBEDDING_MODEL
 
 def extract_code(response_text):
     """(此函数保持不变)"""
@@ -36,51 +69,241 @@ def extract_metrics(response_text):
         print(f"[Tool Agent] Error parsing metrics list: {e}\nResponse was: {response_text}")
         return None
 
+# def get_diverse_champions(history: list, current_best_code: str, num_kernels=2) -> str: # 针对TODO2 做的修改，完整的修改在下面👇
+#     """
+#     (此函数保持不变)
+#     """
+    
+#     # 1. 查找所有成功的条目 (不包括 Round 0)
+#     success_entries = [
+#         h for h in history 
+#         if "Success" in h['status'] and h['round'] > 0 and h.get('code')
+#     ]
+    
+#     # 2. 按性能排序
+#     success_entries.sort(key=lambda x: x['time_ms'])
+    
+#     diverse_str = "--- Diverse Successful Kernel Examples (Best first) ---\n"
+#     count = 0
+    
+#     # 3. 提取代码 (确保它与当前最佳代码 *不同*)
+#     for entry in success_entries:
+#         if entry['code'] == current_best_code:
+#             continue # 跳过与当前最佳完全相同的代码
+            
+#         diverse_str += f"\n\n--- Example {count+1} (From Round {entry['round']}) ---\n"
+#         diverse_str += f"// Goal: {entry['goal']}\n"#这个目标是父节点代码的优化目标，优化后的代码是当前的代码
+#         diverse_str += f"// Performance: {entry['time_ms']:.3f} ms\n"#是当前代码的执行时间
+        
+#         # 添加 PTXAS 指标
+#         ptxas = entry.get('ptxas_metrics', {})# 是当前代码执行过程中的PTXAS信息
+#         for k, v in sorted(ptxas.items()):
+#             diverse_str += f"// {k}: {v}\n"
+        
+#         # [!!! 新增 !!!] 仅添加该轮选择的 NCU 指标
+#         selected_metrics = entry.get('selected_ncu_metrics')
+#         all_ncu = entry.get('all_ncu_metrics')
+        
+#         if isinstance(selected_metrics, list) and isinstance(all_ncu, dict) and selected_metrics:
+#             diverse_str += f"// Selected NCU Metrics (for Goal):\n"
+#             for metric_name in selected_metrics:
+#                 value = all_ncu.get(metric_name, 'N/A')
+#                 diverse_str += f"//  - {metric_name}: {value}\n"
+#         # [!!! 结束新增 !!!]
+
+#         diverse_str += entry['code']
+#         count += 1
+
+#         if count >= num_kernels:
+#             break
+            
+#     if count == 0:
+#         return "No other diverse successful examples available in history."
+#     return diverse_str
+
+# def summarize_history(history: list) -> str: # 由于TODO 1 做的修改，完整的实现见👇
+#     """
+#     (此函数保持不变)
+#     """
+#     if not history:
+#         return "No previous attempts."
+    
+#     summary = "Previous Optimization Attempts:\n"
+#     for i, entry in enumerate(history):
+#         summary += f"  Round {entry['round']}:\n"
+#         summary += f"    Goal: {entry['goal']}\n"
+#         summary += f"    Status: {entry['status']}\n"
+        
+#         perf_str = "N/A"
+#         if entry['time_ms'] is not None:
+#             perf_str = f"{entry['time_ms']:.3f} ms"
+#         summary += f"    Performance: {perf_str}\n"
+
+#         # 添加 PTXAS 指标
+#         if entry.get('ptxas_metrics'):
+#             # 使用 sorted 保证输出顺序稳定，方便阅读
+#             for k, v in sorted(entry['ptxas_metrics'].items()):
+#                 summary += f"    {k}: {v}\n"
+
+#         # [!!! 新增 !!!] 仅添加该轮选择的 NCU 指标
+#         selected_metrics = entry.get('selected_ncu_metrics')
+#         all_ncu = entry.get('all_ncu_metrics')
+        
+#         # 检查 'selected_metrics' 是否是列表，'all_ncu' 是否是字典，并且 'selected_metrics' 不为空
+#         if isinstance(selected_metrics, list) and isinstance(all_ncu, dict) and selected_metrics:
+#             summary += f"    Selected NCU Metrics (for Goal):\n"
+#             for metric_name in selected_metrics:
+#                 value = all_ncu.get(metric_name, 'N/A')
+#                 summary += f"      - {metric_name}: {value}\n"
+#         # [!!! 结束新增 !!!]
+
+#         elif "Error" in entry['status'] or "Failed" in entry['status']:
+#             details = entry.get('details', 'No details')
+#             if len(details) > 200:
+#                 details = details[:200] + "..."
+#             summary += f"    Error Details: {details}\n"
+#     return summary
+
 def get_diverse_champions(history: list, current_best_code: str, num_kernels=2) -> str:
     """
-    (此函数保持不变)
+    (优化版) 获取多样化的成功案例，构建清晰的 [问题 -> 方案 -> 代码 -> 结果] 因果链。
     """
     
-    # 1. 查找所有成功的条目 (不包括 Round 0)
+    # 1. 查找所有成功的条目 (不包括 Round 0，因为 Round 0 没有优化动机)
     success_entries = [
         h for h in history 
-        if "Success" in h['status'] and h['round'] > 0 and h.get('code')
+        if "Success" in h['status'] or "Failed (Performance Regression)" == h['status'] and h['round'] > 0 and h.get('code')
     ]
     
-    # 2. 按性能排序
+    # 2. 按性能排序 (越快越前)
     success_entries.sort(key=lambda x: x['time_ms'])
     
     diverse_str = "--- Diverse Successful Kernel Examples (Best first) ---\n"
     count = 0
+
+    model = get_embedding_model()
+    current_best_emb = None
+    similarity_threshold = 0.95 # 相似度阈值，大于此值视为“相同/太相似”
+
+    if model:
+        try:
+            # 预先计算 current_best_code 的 embedding
+            current_best_emb = model.encode(current_best_code).reshape(1, -1)
+        except Exception as e:
+            print(f"[Warning] Embedding calculation failed for current best code: {e}")
     
-    # 3. 提取代码 (确保它与当前最佳代码 *不同*)
-    for entry in success_entries:#TODO 这里应该改成用embedding做计算，直接判断相等太绝对了
-        if entry['code'] == current_best_code:
-            continue # 跳过与当前最佳完全相同的代码
+    # 3. 提取代码
+    for entry in success_entries:
+        # DONE: 这里应该改成用embedding做计算，直接判断相等太绝对了
+        # if entry['code'] == current_best_code:
+        #     continue # 跳过与当前最佳完全相同的代码
+        is_too_similar = False
+        
+        # --- Embedding 相似度计算逻辑 ---
+        if model and current_best_emb is not None:
+            try:
+                entry_code = entry.get('code', '')
+                if not entry_code: continue
+                
+                entry_emb = model.encode(entry_code).reshape(1, -1)
+                sim = cosine_similarity(current_best_emb, entry_emb)[0][0]
+                
+                # 如果相似度过高，认为缺乏多样性，跳过
+                if sim > similarity_threshold:
+                    print(f"[Info] Skipping similar kernel (Sim: {sim:.4f})")
+                    is_too_similar = True
+            except Exception as e:
+                # 发生异常降级为字符串比较
+                if entry['code'] == current_best_code:
+                    is_too_similar = True
+        else:
+            # 降级：如果没有模型，使用原始字符串完全相等判断
+            if entry['code'] == current_best_code:
+                is_too_similar = True
+
+        if is_too_similar:
+            continue
             
-        diverse_str += f"\n\n--- Example {count+1} (From Round {entry['round']}) ---\n"
-        diverse_str += f"// Goal: {entry['goal']}\n"#这个目标是父节点代码的优化目标，优化后的代码是当前的代码
-        diverse_str += f"// Performance: {entry['time_ms']:.3f} ms\n"#是当前代码的执行时间
+        diverse_str += f"\n\n/* ==================================================================================\n"
+        diverse_str += f" * Example {count+1} (From Round {entry['round']})\n"
+        diverse_str += f" * ================================================================================== */\n"
         
-        # 添加 PTXAS 指标
-        ptxas = entry.get('ptxas_metrics', {})# 是当前代码执行过程中的PTXAS信息
-        for k, v in sorted(ptxas.items()):
-            diverse_str += f"// {k}: {v}\n"
+        # --- 1. [Before] 修改前的缺陷 (Motivation) ---
+        # 解释：这是对“上一版代码”的诊断，是产生当前这段代码的根本原因
+        diag = entry.get('bottleneck_analysis', 'N/A')
+        diverse_str += f"// [1. Motivation] Bottleneck of the Previous Kernel (Before Modification):\n"
+        diverse_str += f"//    Diagnosis: {diag}\n"
         
-        # [!!! 新增 !!!] 仅添加该轮选择的 NCU 指标
+        # --- 2. [Action] 优化目标与策略 (Strategy) ---
+        # 解释：为了解决上述瓶颈，我们设定了这个目标，并生成了下面的代码
+        goal = entry.get('goal', 'N/A')
+        plan = entry.get('detailed_plan', 'N/A').replace('\n', ' ')[:120] + "..." # 截取部分计划
+        diverse_str += f"// [2. Strategy] Optimization Goal & Plan (Target of this Code):\n"
+        diverse_str += f"//    Goal: {goal}\n"
+        diverse_str += f"//    Plan Snippet: {plan}\n"
+        
+        # --- 3. [Code] 优化后的代码 (Implementation) ---
+        diverse_str += f"\n/* [3. Implementation] Optimized CUDA Kernel (Addressing the Goal above) */\n"
+        diverse_str += entry['code'] + "\n"
+        
+        # --- 4. [After] 优化后的指标 (Outcome) ---
+        diverse_str += f"\n/* [4. Outcome] Performance Metrics of THIS Code (After Modification) */\n"
+        diverse_str += f"// Execution Time: {entry['time_ms']:.3f} ms\n"
+        
+        # PTXAS 指标 (编译器反馈)
+        # ptxas = entry.get('ptxas_metrics', {})# 针对TODO3做的修改，完整的修改内容在👇
+        # if ptxas:
+        #     diverse_str += "// PTXAS Compiler Stats:\n"
+        #     for k, v in sorted(ptxas.items()):
+        #         diverse_str += f"//   - {k}: {v}\n"
+        ptxas = entry.get('ptxas_metrics', {})
+        if ptxas:
+            diverse_str += "// PTXAS Compiler Stats:\n"
+            for kernel_name, stats in sorted(ptxas.items()):
+                if isinstance(stats, dict):
+                    # 新格式：提取关键指标并紧凑展示
+                    info_parts = []
+                    # 1. 寄存器
+                    if 'registers' in stats: 
+                        info_parts.append(f"Regs={stats['registers']}")
+                    
+                    # 2. 溢出 (重点关注)
+                    spill = stats.get('spill_bytes', 0)
+                    if spill > 0: 
+                        info_parts.append(f"SPILL={spill}B") # 溢出时显式显示
+                    else:
+                        info_parts.append("Spill=0B")
+                        
+                    # 3. 向量化宽度 (如果有)
+                    width = stats.get('width')
+                    if width and width not in ["Scalar", "?", ""]: 
+                        info_parts.append(f"Vec={width}")
+                    
+                    # 4. 常量/共享内存 (可选，看你需要)
+                    if stats.get('smem_bytes', 0) > 0:
+                        info_parts.append(f"SMem={stats['smem_bytes']}B")
+                    
+                    details = ", ".join(info_parts)
+                    # 简化 Kernel 名字显示，去除过长的模板参数
+                    short_name = kernel_name.split('<')[0] if '<' in kernel_name else kernel_name
+                    if width and str(width).isdigit(): short_name += f"(vec{width})"
+                    
+                    diverse_str += f"//   - [{short_name}]: {details}\n"
+                else:
+                    # 旧格式兼容 (Fallback)
+                    diverse_str += f"//   - {kernel_name}: {stats}\n"
+        
+        # NCU 指标 (运行时反馈 - 仅展示为了验证目标而选择的指标)
         selected_metrics = entry.get('selected_ncu_metrics')
         all_ncu = entry.get('all_ncu_metrics')
         
         if isinstance(selected_metrics, list) and isinstance(all_ncu, dict) and selected_metrics:
-            diverse_str += f"// Selected NCU Metrics (for Goal):\n"
+            diverse_str += "// Key NCU Hardware Metrics (Verified against Goal):\n"
             for metric_name in selected_metrics:
                 value = all_ncu.get(metric_name, 'N/A')
-                diverse_str += f"//  - {metric_name}: {value}\n"
-        # [!!! 结束新增 !!!]
-
-        diverse_str += entry['code']
+                diverse_str += f"//   - {metric_name}: {value}\n"
+        
         count += 1
-
         if count >= num_kernels:
             break
             
@@ -90,47 +313,135 @@ def get_diverse_champions(history: list, current_best_code: str, num_kernels=2) 
 
 def summarize_history(history: list) -> str:
     """
-    (此函数保持不变)
+    (优化版) 生成具有明确因果关系链的历史摘要。
+    结构：[Before: 动机] -> [Action: 动作] -> [After: 结果]
     """
     if not history:
         return "No previous attempts."
     
-    summary = "Previous Optimization Attempts:\n"
-    for i, entry in enumerate(history):
-        summary += f"  Round {entry['round']}:\n"
-        summary += f"    Goal: {entry['goal']}\n"
-        summary += f"    Status: {entry['status']}\n"
+    summary = "=== Optimization Experiments Knowledge Base ===\n"
+    
+    # 1. Baseline 单独展示
+    baseline = history[0]
+    summary += f"[Round 0 - Baseline] Performance: {baseline.get('time_ms', 'N/A'):.3f} ms\n"
+    # 如果 Baseline 有 NCU 指标，也稍微展示一下关键的
+    if baseline.get('all_ncu_metrics'):
+        base_ncu = baseline['all_ncu_metrics']
         
-        perf_str = "N/A"
-        if entry['time_ms'] is not None:
-            perf_str = f"{entry['time_ms']:.3f} ms"
-        summary += f"    Performance: {perf_str}\n"
-
-        # 添加 PTXAS 指标
-        if entry.get('ptxas_metrics'):
-            # 使用 sorted 保证输出顺序稳定，方便阅读
-            for k, v in sorted(entry['ptxas_metrics'].items()):
-                summary += f"    {k}: {v}\n"
-
-        # [!!! 新增 !!!] 仅添加该轮选择的 NCU 指标
-        selected_metrics = entry.get('selected_ncu_metrics')
-        all_ncu = entry.get('all_ncu_metrics')
+        # [!!! 修复 !!!] 使用实际存在的键名
+        # 优先尝试简化的键名，如果不存在则尝试原始键名，最后回退到 N/A
+        dram_val = base_ncu.get('DRAMThroughput', base_ncu.get('dram__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A'))
+        sm_val = base_ncu.get('ComputeSMThroughput', base_ncu.get('sm__throughput.avg.pct_of_peak_sustained_elapsed', 'N/A'))
         
-        # 检查 'selected_metrics' 是否是列表，'all_ncu' 是否是字典，并且 'selected_metrics' 不为空
-        if isinstance(selected_metrics, list) and isinstance(all_ncu, dict) and selected_metrics:
-            summary += f"    Selected NCU Metrics (for Goal):\n"
-            for metric_name in selected_metrics:
-                value = all_ncu.get(metric_name, 'N/A')
-                summary += f"      - {metric_name}: {value}\n"
-        # [!!! 结束新增 !!!]
+        # 如果取到了数值，格式化一下
+        dram_str = f"{dram_val}%" if isinstance(dram_val, (int, float)) else "N/A"
+        sm_str = f"{sm_val}%" if isinstance(sm_val, (int, float)) else "N/A"
+        
+        summary += f"  > Baseline Context: DRAM={dram_str}, SM={sm_str}\n"
+        
+    summary += "-" * 50 + "\n"
 
-        elif "Error" in entry['status'] or "Failed" in entry['status']:
-            details = entry.get('details', 'No details')
-            if len(details) > 200:
-                details = details[:200] + "..."
-            summary += f"    Error Details: {details}\n"
+    # 2. 展示后续迭代
+    for entry in history[1:]:
+        r = entry['round']
+        status = entry['status']
+        time_ms = entry.get('time_ms')
+        perf_str = f"{time_ms:.3f} ms" if time_ms else "N/A"
+        
+        summary += f"[Round {r}] Status: {status} | Time: {perf_str}\n"
+        
+        # --- [Before: 动机] ---
+        # 解释：这是针对“上一轮代码”的诊断，是这一轮优化的起因
+        diag = entry.get('bottleneck_analysis', 'N/A')
+        summary += f"  > [Motivation] Bottlenecks in the kernel before optimization: {diag}\n"
+        
+        # --- [Action: 动作] ---
+        # 解释：这是这一轮具体做了什么
+        goal = entry.get('goal', 'N/A')
+        summary += f"  > [Action] Optimization Goal: {goal}\n"
+        
+        # Plan 摘要
+        plan_text = entry.get('detailed_plan', '')
+        if plan_text:
+            plan_snippet = plan_text.replace('\n', ' ')[:150] + "..."
+            summary += f"  > [Action] Plan Details: {plan_snippet}\n"
+
+        # --- [After: 结果] ---
+        # 解释：这是这一轮代码编译和运行后的客观数据
+        summary += "  > [Result] According to the optimization objective, the information of each index of the optimized CUDA kernel is as follows:(PTXAS & NCU):\n"
+        
+        # 1. PTXAS (编译器结果)
+        # ptxas = entry.get('ptxas_metrics', {})# 针对与TODO3的修改,修改内容如下👇
+        # metrics_shown = False
+        # for k, v in sorted(ptxas.items()):
+        #     # 只显示非零的溢出或关键寄存器信息，减少噪音
+        #     if 'spill' in k and v > 0:
+        #         summary += f"    ! PTXAS {k}: {v} (SPILL DETECTED)\n"
+        #         metrics_shown = True
+        #     elif 'registers' in k:
+        #         summary += f"    - PTXAS {k}: {v}\n"
+        #         metrics_shown = True
+
+        ptxas = entry.get('ptxas_metrics', {})
+        if ptxas:
+            for kernel_name, stats in sorted(ptxas.items()):
+                # 防御性检查：确保 stats 是字典（兼容旧日志格式）
+                if not isinstance(stats, dict):
+                    # 旧格式回退处理
+                    if 'spill' in kernel_name and stats > 0:
+                        summary += f"    ! PTXAS {kernel_name}: {stats} (SPILL!)\n"
+                    continue
+
+                # 新格式解析
+                regs = stats.get('registers', 'N/A')
+                spill = stats.get('spill_bytes', 0)
+                width = stats.get('width', '')
+                
+                # 构建显示的字符串
+                info_parts = [f"Regs={regs}"]
+                if spill > 0:
+                    info_parts.append(f"SPILL={spill} bytes")
+                if width and width not in ["Scalar", "?", ""]:
+                    info_parts.append(f"Vec={width}") # 显示向量化宽度对优化很有用
+                
+                info_str = ", ".join(info_parts)
+                
+                # 如果有溢出，用感叹号开头
+                prefix = "!" if spill > 0 else "-"
+                warning = " (SPILL DETECTED!)" if spill > 0 else ""
+                
+                # 简化 Kernel 名字显示 (去除过长的模板参数，保留核心)
+                # 例如: sigmoid_kernel_vec<float, 4> -> sigmoid_kernel_vec
+                short_name = kernel_name.split('<')[0] if '<' in kernel_name else kernel_name
+                if width and width.isdigit(): short_name += f"(vec{width})"
+                
+                summary += f"    {prefix} PTXAS [{short_name}]: {info_str}{warning}\n"
+                metrics_shown = True
+        
+        # 2. NCU (运行时硬件结果 - 闭环验证)
+        # 这里展示 Tool Agent 专门挑选来验证 Goal 的指标
+        selected_ncu = entry.get('selected_ncu_metrics') # List[str]
+        all_ncu = entry.get('all_ncu_metrics') # Dict
+        
+        if isinstance(selected_ncu, list) and isinstance(all_ncu, dict) and selected_ncu:
+            for metric_name in selected_ncu:
+                val = all_ncu.get(metric_name, 'N/A')
+                # 简化指标名称，去掉过长的前缀以便 LLM 阅读
+                short_name = metric_name.split('.')[-1] if '.' in metric_name else metric_name
+                summary += f"    - NCU {short_name}: {val}\n"
+            metrics_shown = True
+            
+        if not metrics_shown:
+            summary += "    (No significant metrics available)\n"
+
+        # 3. 失败原因 (如果有)
+        if "Error" in status or "Failed" in status:
+            err = entry.get('details', '')
+            summary += f"  > [Result] The reason why the optimized kernel failed: {err[:250]}...\n"
+        
+        summary += "\n"
+        
     return summary
-
 
 def format_metrics_for_llm(ptxas_metrics: dict, ncu_metrics: dict) -> str:
     if not ncu_metrics:
@@ -393,8 +704,8 @@ def run_optimization_on_problem(
             planner_response = agents.call_llm(
                 "planner", 
                 prompts.PLANNER_SYSTEM_PROMPT,
-                f"Optimization History:\n{history_summary}\n\n"#TODO 这个提示词信息需要重新设计一下，history_summary光有这些信息没有用啊，不知道每个指标的对应的代码是什么啊，每个记录的代码是在哪个版本上做的修改啊，这些都不知道
-                f"=== Hardware Metrics for Current Best Kernel ===\n{metrics_summary}\n\n"
+                f"Optimization History:\n{history_summary}\n\n"#DONE 1 这个提示词信息需要重新设计一下，history_summary光有这些信息没有用啊，不知道每个指标的对应的代码是什么啊，每个记录的代码是在哪个版本上做的修改啊，这些都不知道
+                f"=== Hardware Metrics for Current Best Kernel(Need to be optimized) ===\n{metrics_summary}\n\n"
                 f"Current Best C++/CUDA Source (Time: {best_time_ms:.3f} ms):\n{parent_kernel_code}" # <--- [!!! 已更新 !!!]
             )
             if not planner_response or "OPTIMIZATION_GOAL:" not in planner_response:
@@ -425,11 +736,20 @@ def run_optimization_on_problem(
             if not all_metric_names:
                 all_metric_names = config.BASE_NCU_METRICS_LIST_EXAMPLE
                 
-            tool_response = agents.call_llm(# TODO:这个提升词也要重新设计一下，只有27个指标和优化目标，让LLM从中选5个，可是不知道现在要有化的任务代码是什么啊？
+            # tool_response = agents.call_llm(# DONE👇:这个提示词也要重新设计一下，只有27个指标和优化目标，让LLM从中选5个，可是不知道现在要优化的任务代码是什么啊？
+            #     "tool", 
+            #     prompts.TOOL_SYSTEM_PROMPT,
+            #     f"All Available NCU Metric Names ({len(all_metric_names)}): {all_metric_names}\n\nOptimization Goal: {opt_goal}"
+            # )
+            tool_response = agents.call_llm(
                 "tool", 
                 prompts.TOOL_SYSTEM_PROMPT,
-                f"All Available NCU Metric Names ({len(all_metric_names)}): {all_metric_names}\n\nOptimization Goal: {opt_goal}"
+                f"Optimization Goal: {opt_goal}\n\n"
+                f"Planner's Bottleneck Analysis: {bottleneck_analysis}\n\n"
+                f"Current C++/CUDA Source:\n{parent_kernel_code}\n\n" 
+                f"All Available NCU Metric Names ({len(all_metric_names)}): {all_metric_names}"
             )
+
             print("-----------------------LXT:tool_response----------------------")
             print(tool_response)
             print("-----------------------LXT:tool_response----------------------")
@@ -456,14 +776,14 @@ def run_optimization_on_problem(
                 prompts.ANALYSIS_SYSTEM_PROMPT,
                 f"Planner's Bottleneck Analysis: {bottleneck_analysis}\n\n"
                 f"Optimization Goal: {opt_goal}\n\n"
-                f"Optimization History:\n{history_summary}\n\n"# TODO：和planner的同理，这个history_summary的信息是否足够有用？
-                f"Diverse Successful Kernel Examples:\n{diverse_kernels_str}\n\n"#TODO 这里的信息是不是应该好好组织一下，不然LLM分不清这些指标和优化目标是当前代码的还是当前代码的父节点的
-                f"Current Best C++/CUDA Source:\n{parent_kernel_code}\n\n" # parent_kernel_code就是当前最好的kernel,也就是正在改的版本，是当前这个！每次改的都是最好的那个
-                f"Current Best Hardware Metrics (Full Set): {metrics_summary}\n\n"# 是当前kernel的全部PTXAS信息和NCU信息
+                f"Optimization History:\n{history_summary}\n\n"# DONE：和planner的同理，这个history_summary的信息是否足够有用？
+                f"Diverse Successful Kernel Examples:\n{diverse_kernels_str}\n\n"#DONE 2 这里的信息是不是应该好好组织一下，不然LLM分不清这些指标和优化目标是当前代码的还是当前代码的父节点的
+                f"Current C++/CUDA Source need to be optimized:\n{parent_kernel_code}\n\n" # parent_kernel_code就是当前最好的kernel,也就是正在改的版本，是当前这个！每次改的都是最好的那个
+                f"Current Hardware Metrics (Full Set): {metrics_summary}\n\n"# 是当前kernel的全部PTXAS信息和NCU信息
                 f"Tool-Selected Metrics from *Previous* Run (Values): {relevant_metrics_dict}" # 是当前kernel的选择出来的五个相关NCU指标。
             )
             print("-----------------------LXT:analysis_response----------------------")
-            print(analysis_response)#TODO:当前的输出部分没有think的过程
+            print(analysis_response)#DONE:当前的输出部分没有think的过程
             print("-----------------------LXT:analysis_response----------------------")
             if not analysis_response or "DETAILED_PLAN:" not in analysis_response:
                 status, details = "Failed (Analysis)", "Analysis Agent did not return a valid plan."
@@ -473,7 +793,7 @@ def run_optimization_on_problem(
 
             # 4. Coder Agent
             print("[Coder Agent] Generating new kernel...")
-            coder_response = agents.call_llm(# TODO:coder agent没有思考过程
+            coder_response = agents.call_llm(# DONE:coder agent没有思考过程
                 "coder", 
                 prompts.CODER_SYSTEM_PROMPT,
                 f"Original C++/CUDA Source:\n{parent_kernel_code}\n\nDetailed Plan:\n{detailed_plan}" 
@@ -500,23 +820,29 @@ def run_optimization_on_problem(
             
             try:
                 # [!!! 已更新 !!!] 假设 Coder 返回 C++ 和 CUDA
-                module, stdout_log, stderr_log = cuda_utils.load_module(
+                module, stdout_log, err_msg = cuda_utils.load_module(
                     new_kernel_code_full,
                     current_module_name,
                     init_inputs, # <--- [!!! 已更新 !!!]
                 )
                 # print("Compilation successful.")
-                new_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)# TODO针对21用例这里提取的PTXAS信息不太对劲
                 
+                new_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)# DONE3 针对21用例这里提取的PTXAS信息不太对劲
+                if not module:
+                    status, details = "Failed (Compilation)", f"New kernel is COMPILATION INCORRECT.{err_msg}"
+                    print(f"❌ {status}")
+                    continue 
+
+
                 # [!!! 已更新 !!!]
-                is_correct, _ = cuda_utils.check_correctness(inputs, ref_outputs, module)
+                is_correct, err_str = cuda_utils.check_correctness(inputs, ref_outputs, module)
                 if not is_correct:
-                    status, details = "Failed (Correctness)", "New kernel is INCORRECT."
+                    status, details = "Failed (Correctness)", f"New kernel is OUTPUT RESULT INCORRECT.{err_str}"
                     print(f"❌ {status}")
                     continue 
                     
             except Exception as e:
-                status, details = "Failed (Compilation)", str(e)
+                status, details = "An exception occurred during compilation or validation!", str(e)
                 print(f"❌ {status}")
                 continue 
                 
@@ -603,7 +929,7 @@ def run_optimization_on_problem(
                 details = f"New time {new_time_ms:.3f} ms is not better than best time {best_time_ms:.3f} ms."
                 print(f"❌ {status} {details}")
             
-            current_ncu_metrics = best_ncu_metrics# TODO：这里应该是best_ncu_metrics吧，之前是new_ncu_metrics
+            current_ncu_metrics = best_ncu_metrics# DONE：这里应该是best_ncu_metrics吧，之前是new_ncu_metrics
 
         except Exception as e:
             status, details = "Failed (Unhandled Exception)", str(e)
@@ -653,9 +979,24 @@ def run_optimization_on_problem(
             #         else: 
             #             code_to_save = new_kernel_code_full # 无法分离，保存全部
             
+            # history_entry = { # 由于TODO 1 做的修改，改成下面的历史存储方式👇
+            #     "round": i,# 当前的轮数
+            #     "goal": opt_goal,# 生成该项中的代码的优化目标（本项中的code就是基于这个goal生成的）
+            #     "status": status,# 当前code的状态
+            #     "time_ms": new_time_ms if new_time_ms != float('inf') else None,# 当前code的执行时间
+            #     "ptxas_metrics": new_ptxas_metrics,# 当前code的ptxas指标
+            #     "all_ncu_metrics": new_ncu_metrics,# 当前code的ncu指标
+            #     "selected_ncu_metrics": relevant_metric_names,# 在生成当前code的时候选择的ncu指标
+            #     "details": details,
+            #     "code": new_kernel_code_full# 当前code
+            # }
             history_entry = {
                 "round": i,
                 "goal": opt_goal,
+                # [!!! 新增 !!!] 保存诊断和具体的实施计划，这就是“代码改动”的语义替身
+                "bottleneck_analysis": bottleneck_analysis, 
+                "detailed_plan": detailed_plan,
+                
                 "status": status,
                 "time_ms": new_time_ms if new_time_ms != float('inf') else None,
                 "ptxas_metrics": new_ptxas_metrics,
@@ -664,6 +1005,7 @@ def run_optimization_on_problem(
                 "details": details,
                 "code": new_kernel_code_full
             }
+
             optimization_history.append(history_entry)
 
             # [!!! 已修改 !!!] (来自你之前的请求) 实时保存历史

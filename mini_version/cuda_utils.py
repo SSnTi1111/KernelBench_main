@@ -19,11 +19,11 @@ import warnings
 import traceback 
 import weakref 
 import numpy as np  
-from typing import Dict, List # <--- [修复] 添加 List
+from typing import Dict, List, Any # <--- [修复] 添加 List
 
 # 编译后的模块的全局缓存
 _gemm_module = None
-
+# data_type_info = ""
 # vvv --- [!!! 已更新 !!!] NCU 模板现在是通用的 --- vvv
 NCU_TARGET_SCRIPT_TEMPLATE = """
 import torch
@@ -236,6 +236,18 @@ class FDCapturer:
         self._temp_file.seek(0)
         return self._temp_file.read().decode('utf-8', errors='replace')
 
+import subprocess
+def extract_error_and_next_line(text):
+    # 按行分割
+    lines = text.splitlines()
+    results = []
+    for i, line in enumerate(lines):
+        if "error:" in line:
+            results.append(line)
+            if i + 1 < len(lines):
+                results.append(lines[i + 1])
+    return "\n".join(results)
+
 # --- 2. 修改 load_module ---
 def load_module(cuda_code, module_name, init_inputs):
     # 1. 强制清理缓存
@@ -289,8 +301,9 @@ def load_module(cuda_code, module_name, init_inputs):
             # 编译失败也清理文件
             if os.path.exists(file_path):
                 os.remove(file_path)
+            err_msg = extract_error_and_next_line(capturer.get_output())
             # 依然返回日志供分析
-            return None, capturer.get_output(), capturer.get_output()
+            return None, capturer.get_output(), err_msg
         
         captured_log = capturer.get_output()
         
@@ -490,6 +503,7 @@ def check_correctness(inputs, ref_outputs, module):
     返回: (is_correct: bool, error_msg: str)
     """
     print("Running evolved kernel for correctness check...")
+    data_type_info = ""
     try:
         # 确保输入在 GPU 上
         # gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
@@ -530,7 +544,7 @@ def check_correctness(inputs, ref_outputs, module):
                 return abs(a - b) <= (atol + rtol * abs(b))
 
             print("输出类型不匹配：", type(a), type(b))
-            # data_type_info = f"The value type of some values in the return value is incorrect. The current value type is {type(b)} and the correct value type is f{type(a)}"
+            data_type_info = f"The value type of some values in the return value is incorrect. The current value type is {type(b)} and the correct value type is f{type(a)}"
             return False
         
         if C_evolved_outputs.shape != ref_outputs.shape:
@@ -540,8 +554,10 @@ def check_correctness(inputs, ref_outputs, module):
             error_msgs.append(msg)
             print(msg)
             return False,msg
-        if not compare_outputs(C_evolved_outputs,ref_outputs):
+        if not compare_outputs(C_evolved_outputs,ref_outputs): 
             is_correct = False
+            if not data_type_info:
+               return False, data_type_info
             # --- [核心修改] 捕获前 5 个错误值 ---
             diff = torch.abs(C_evolved_outputs - ref_outputs)
             # 计算允许的误差范围
@@ -641,85 +657,241 @@ def check_correctness(inputs, ref_outputs, module):
         return False, err_str
         
 # vvv --- PTXAS 解析器 (保持不变) --- vvv
-def parse_ptxas_info(log_str: str) -> Dict[str, float]:
+# def parse_ptxas_info(log_str: str) -> Dict[str, float]: #针对TODO3做的修改，详细的修改内容见👇
+#     """
+#     解析 PTXAS 日志，返回扁平化的指标字典。
+#     键名会自动添加数据类型前缀，例如 'float_registers_used', 'double_spill_bytes' 等。
+#     """
+#     metrics = {}
+    
+#     try:
+#         # 1. 按 "Compiling entry function" 将日志切分为不同的内核块
+#         # 这样可以防止不同内核的指标混淆
+#         blocks = log_str.split("Compiling entry function")
+        
+#         for block in blocks:
+#             if not block.strip():
+#                 continue
+                
+#             # 2. 识别内核类型 (通过 C++ Name Mangling)
+#             # _Z...If... -> float
+#             # _Z...Id... -> double
+#             # _Z...Ih... -> half (fp16)
+#             # _Z...Ib... -> bfloat16 (bf16)
+#             kernel_type = "unknown"
+            
+#             # 提取函数名，例如 '_Z14sigmoid_kernelIfEvPKT_PS0_l'
+#             # 这里的正则匹配单引号内的修饰名
+#             name_match = re.search(r"\'(_Z\w+)\'", block)
+#             if name_match:
+#                 mangled_name = name_match.group(1)
+#                 if "If" in mangled_name:
+#                     kernel_type = "float"
+#                 elif "Id" in mangled_name:
+#                     kernel_type = "double"
+#                 elif "Ih" in mangled_name:
+#                     kernel_type = "half"
+#                 elif "Ib" in mangled_name:
+#                     kernel_type = "bfloat16"
+#                 else:
+#                     # 如果无法识别具体类型，就使用 "kernel" 或者保留一部分特征
+#                     kernel_type = "kernel" 
+#             else:
+#                 # 如果找不到函数名，可能是全局共有代码或其他部分，跳过
+#                 continue
+
+#             # 3. 解析该块内的具体指标，并构建带前缀的键名
+            
+#             # --- 寄存器 (Registers) ---
+#             reg_match = re.search(r'Used\s+(\d+)\s+registers', block)
+#             if reg_match:
+#                 metrics[f'{kernel_type}_registers_used'] = float(reg_match.group(1))
+
+#             # --- 共享内存 (Shared Memory / smem) ---
+#             smem_match = re.search(r'(\d+)\s+bytes\s+smem', block)
+#             if smem_match:
+#                 metrics[f'{kernel_type}_shared_mem_bytes'] = float(smem_match.group(1))
+#             else:
+#                 metrics[f'{kernel_type}_shared_mem_bytes'] = 0.0
+            
+#             # --- 常量内存 (Constant Memory / cmem) [新增] ---
+#             # 可能会有多段 cmem (e.g., cmem[0], cmem[2])，我们需要求和
+#             cmem_matches = re.findall(r'(\d+)\s+bytes\s+cmem', block)
+#             if cmem_matches:
+#                 metrics[f'{kernel_type}_constant_mem_bytes'] = sum(float(x) for x in cmem_matches)
+#             else:
+#                 metrics[f'{kernel_type}_constant_mem_bytes'] = 0.0
+
+#             # --- 溢出 (Spill Stores/Loads) ---
+#             spill_stores = re.search(r'(\d+)\s+bytes\s+spill\s+stores', block)
+#             spill_loads = re.search(r'(\d+)\s+bytes\s+spill\s+loads', block)
+            
+#             spill_total = 0.0
+#             if spill_stores: spill_total += float(spill_stores.group(1))
+#             if spill_loads:  spill_total += float(spill_loads.group(1))
+#             metrics[f'{kernel_type}_spill_bytes'] = spill_total
+
+#     except Exception as e:
+#         print(f"警告：解析 PTXAS 日志失败: {e}", file=sys.stderr)
+    
+#     print(f"--- [ PTXAS Metrics Parsed ] ---")
+#     print(json.dumps(metrics, indent=2))
+    
+#     return metrics
+
+def parse_ptxas_info(log_str: str) -> Dict[str, Any]:
     """
-    解析 PTXAS 日志，返回扁平化的指标字典。
-    键名会自动添加数据类型前缀，例如 'float_registers_used', 'double_spill_bytes' 等。
+    [升级版] 高级解析 PTXAS 日志，生成结构化表格。
+    修复：支持从函数名中解析向量化宽度 (如 sigmoid_vec4 -> width=4)
+    修复：支持从函数参数中推断数据类型 (如 PKf -> float, PK6__half -> Half)
     """
     metrics = {}
     
+    # 辅助函数：增强版 Demangler
+    def _demangle_info(mangled: str):
+        # 1. 提取函数名 (Itanium ABI: _Z + len + name)
+        # 例如: _Z19sigmoid_kernel_vec4... -> len=19, name=sigmoid_kernel_vec4
+        name_match = re.match(r'_Z(\d+)(\w+)', mangled)
+        func_name = "unknown"
+        suffix_part = "" # 包含模板参数 或 函数参数签名
+        
+        if name_match:
+            length = int(name_match.group(1))
+            full_string = name_match.group(2)
+            func_name = full_string[:length]
+            suffix_part = full_string[length:] # 剩下的部分
+        else:
+            func_name = mangled
+
+        # 2. 解析向量化宽度 (Width)
+        width = "Scalar"
+        
+        # 策略 A: 查找模板参数中的 Li (Literal Int)，例如 <float, 4> -> Li4
+        vec_match_template = re.search(r'Li(\d+)', suffix_part)
+        
+        # 策略 B: [新增] 查找函数名中的 vecX，例如 sigmoid_vec4
+        vec_match_name = re.search(r'vec(\d+)', func_name, re.IGNORECASE)
+        
+        if vec_match_template:
+            width = vec_match_template.group(1)
+        elif vec_match_name:
+            width = vec_match_name.group(1)
+        elif "vec" in func_name.lower():
+            width = "?" # 即使是向量化函数，也没找到具体数字
+            
+        # 3. 解析数据类型 (Data Type)
+        dtype = "Unknown"
+        name_lower = func_name.lower()
+        
+        # 策略 A: [新增] 优先检查函数名中的显式标记 (如 fp16_vec4)
+        if "fp16" in name_lower or "half" in name_lower:
+            dtype = "Half(FP16)"
+        elif "bf16" in name_lower or "bfloat16" in name_lower:
+            dtype = "BFloat16"
+        elif "fp64" in name_lower or "double" in name_lower:
+            dtype = "double(FP64)"
+        elif "fp32" in name_lower or "float" in name_lower:
+            dtype = "float(FP32)"
+        
+        # 策略 B: 检查 Mangled Suffix (模板参数 或 函数参数类型)
+        if dtype == "Unknown":
+            # Half 检测: PyTorch ATen Half (N3c104HalfE) 或 CUDA __half (6__half)
+            if 'Half' in suffix_part or '__half' in suffix_part:
+                dtype = "Half(FP16)"
+            elif 'BFloat16' in suffix_part or '__nv_bfloat16' in suffix_part:
+                dtype = "BFloat16"
+            
+            # Double 检测: 模板 Id, 指针 Pd/PKd
+            elif 'Id' in suffix_part or 'Pd' in suffix_part or 'PKd' in suffix_part:
+                 dtype = "double(FP64)"
+            
+            # Float 检测: 模板 If, 指针 Pf/PKf
+            elif 'If' in suffix_part or 'Pf' in suffix_part or 'PKf' in suffix_part:
+                 dtype = "float(FP32)"
+            
+            # 兜底: 简单字符匹配 (慎用，防止匹配到函数名的一部分)
+            elif 'd' in suffix_part and 'f' not in suffix_part: # 只有d没有f
+                 dtype = "double(FP64)"
+            elif 'f' in suffix_part and 'd' not in suffix_part: # 只有f没有d
+                 dtype = "float(FP32)"
+
+        # 构建可读函数名 (Pretty Name)
+        clean_func_name = func_name
+        # 如果类型已知，生成类似 sigmoid<float, 4> 的名字
+        type_str = dtype.split('(')[0]
+        if width != "Scalar" and width != "?":
+            pretty_name = f"{clean_func_name}<{type_str}, {width}>"
+        else:
+            pretty_name = f"{clean_func_name}<{type_str}>"
+            
+        return func_name, pretty_name, dtype, width
+
     try:
-        # 1. 按 "Compiling entry function" 将日志切分为不同的内核块
-        # 这样可以防止不同内核的指标混淆
+        # 1. 按 Entry Function 分块
         blocks = log_str.split("Compiling entry function")
         
+        # 打印表头
+        print(f"\n{'='*100}")
+        print(f"{'内核函数 (Mangled Name)':<45} | {'数据类型':<12} | {'宽度':<5} | {'寄存器':<6} | {'备注 (Local/Const/Shared)'}")
+        print(f"{'-'*100}")
+
         for block in blocks:
-            if not block.strip():
-                continue
-                
-            # 2. 识别内核类型 (通过 C++ Name Mangling)
-            # _Z...If... -> float
-            # _Z...Id... -> double
-            # _Z...Ih... -> half (fp16)
-            # _Z...Ib... -> bfloat16 (bf16)
-            kernel_type = "unknown"
+            if not block.strip(): continue
             
-            # 提取函数名，例如 '_Z14sigmoid_kernelIfEvPKT_PS0_l'
-            # 这里的正则匹配单引号内的修饰名
+            # 提取 Mangled Name
             name_match = re.search(r"\'(_Z\w+)\'", block)
-            if name_match:
-                mangled_name = name_match.group(1)
-                if "If" in mangled_name:
-                    kernel_type = "float"
-                elif "Id" in mangled_name:
-                    kernel_type = "double"
-                elif "Ih" in mangled_name:
-                    kernel_type = "half"
-                elif "Ib" in mangled_name:
-                    kernel_type = "bfloat16"
-                else:
-                    # 如果无法识别具体类型，就使用 "kernel" 或者保留一部分特征
-                    kernel_type = "kernel" 
-            else:
-                # 如果找不到函数名，可能是全局共有代码或其他部分，跳过
-                continue
-
-            # 3. 解析该块内的具体指标，并构建带前缀的键名
+            if not name_match: continue
             
-            # --- 寄存器 (Registers) ---
+            mangled_name = name_match.group(1)
+            func_base, pretty_name, dtype, width = _demangle_info(mangled_name)
+            
+            # 提取指标
+            regs = 0
             reg_match = re.search(r'Used\s+(\d+)\s+registers', block)
-            if reg_match:
-                metrics[f'{kernel_type}_registers_used'] = float(reg_match.group(1))
-
-            # --- 共享内存 (Shared Memory / smem) ---
+            if reg_match: regs = int(reg_match.group(1))
+            
+            # 内存指标
+            smem = 0
             smem_match = re.search(r'(\d+)\s+bytes\s+smem', block)
-            if smem_match:
-                metrics[f'{kernel_type}_shared_mem_bytes'] = float(smem_match.group(1))
-            else:
-                metrics[f'{kernel_type}_shared_mem_bytes'] = 0.0
+            if smem_match: smem = int(smem_match.group(1))
             
-            # --- 常量内存 (Constant Memory / cmem) [新增] ---
-            # 可能会有多段 cmem (e.g., cmem[0], cmem[2])，我们需要求和
             cmem_matches = re.findall(r'(\d+)\s+bytes\s+cmem', block)
-            if cmem_matches:
-                metrics[f'{kernel_type}_constant_mem_bytes'] = sum(float(x) for x in cmem_matches)
-            else:
-                metrics[f'{kernel_type}_constant_mem_bytes'] = 0.0
-
-            # --- 溢出 (Spill Stores/Loads) ---
-            spill_stores = re.search(r'(\d+)\s+bytes\s+spill\s+stores', block)
-            spill_loads = re.search(r'(\d+)\s+bytes\s+spill\s+loads', block)
+            cmem_str = "+".join(cmem_matches) if cmem_matches else "0"
+            cmem_total = sum(int(x) for x in cmem_matches)
             
-            spill_total = 0.0
-            if spill_stores: spill_total += float(spill_stores.group(1))
-            if spill_loads:  spill_total += float(spill_loads.group(1))
-            metrics[f'{kernel_type}_spill_bytes'] = spill_total
+            spill_store = 0
+            spill_load = 0
+            spill_s = re.search(r'(\d+)\s+bytes\s+spill\s+stores', block)
+            spill_l = re.search(r'(\d+)\s+bytes\s+spill\s+loads', block)
+            if spill_s: spill_store = int(spill_s.group(1))
+            if spill_l: spill_load = int(spill_l.group(1))
+            spill_total = spill_store + spill_load
+            
+            # 构建备注
+            remarks = []
+            if cmem_total > 0: remarks.append(f"Cmem: {cmem_str}")
+            if smem > 0: remarks.append(f"Smem: {smem}")
+            if spill_total > 0: remarks.append(f"SPILL: {spill_total}B")
+            remark_str = ", ".join(remarks)
+            
+            # 打印表格行
+            display_mangled = (mangled_name[:42] + '..') if len(mangled_name) > 44 else mangled_name
+            print(f"{display_mangled:<45} | {dtype:<12} | {width:<5} | {regs:<6} | {remark_str}")
+
+            # 存入 metrics 字典
+            metrics[pretty_name] = {
+                "registers": regs,
+                "spill_bytes": spill_total,
+                "cmem_bytes": cmem_total,
+                "smem_bytes": smem,
+                "type": dtype,
+                "width": width
+            }
+            
+        print(f"{'='*100}\n")
 
     except Exception as e:
         print(f"警告：解析 PTXAS 日志失败: {e}", file=sys.stderr)
-    
-    print(f"--- [ PTXAS Metrics Parsed ] ---")
-    print(json.dumps(metrics, indent=2))
     
     return metrics
 

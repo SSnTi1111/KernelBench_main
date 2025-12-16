@@ -810,7 +810,7 @@ def main(args):
                 
                 # [!!! 已更新 !!!] 
                 # 自己生成参考输出 (Ref Outputs)
-                gpu_inputs = [move_to_cuda(t) for t in inputs]# 经过处理后目前gpu_inputs中的tensor已经是在GPU上了 TODO：如果inputs中存在tensor元组这里应该处理不了
+                gpu_inputs = [move_to_cuda(t) for t in inputs]# 经过处理后目前gpu_inputs中的tensor已经是在GPU上了 DONE：如果inputs中存在tensor元组这里应该处理不了
                 
                 # (确保 ref_outputs 始终是列表)
                 ref_outputs_raw = pytorch_kernel_module(*gpu_inputs)#*gpu_inputs 表示解包列表或元组，把里面的元素作为单独参数传入函数。
@@ -830,7 +830,7 @@ def main(args):
                 # 过滤掉布尔值 (例如 'return_indices')，
                 # 因为它们通常控制 *输出签名* (例如，返回一个还是两个张量)，
                 # 而不是作为 *输入* 参数传递给内核。
-                # runtime_init_args = [arg for arg in init_inputs if not isinstance(arg, bool)]# TODO 是不是应该删掉？？？
+                # runtime_init_args = [arg for arg in init_inputs if not isinstance(arg, bool)]# DONE 是不是应该删掉？？？
                 
                 # if runtime_init_args:
                 #     print(f"为 {problem_name} 添加 {len(runtime_init_args)} 个 __init__ 参数: {runtime_init_args}")
