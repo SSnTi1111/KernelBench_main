@@ -990,7 +990,8 @@ def main(args):
                     # wrapper_function_name=wrapper_function_name,
                     iteration_rounds=mv_config.ITERATION_ROUNDS,
                     history_file_path=history_file_path,
-                    baseline_time_ms=baseline_time_ms # [!!! 已更新，传入基线时间 !!!]
+                    baseline_time_ms=baseline_time_ms, # [!!! 已更新，传入基线时间 !!!]
+                    full_pytorch_source_code = full_pytorch_source_code
                 )
                 
                 if 'error' in best_node:
