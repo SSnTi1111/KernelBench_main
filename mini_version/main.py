@@ -829,52 +829,30 @@ def run_optimization_on_problem(
             print(f"Compiling new kernel (module: {current_module_name})...")
             
             try:
-               
-                module, stdout_log, err_msg = cuda_utils.load_module(
-                    new_kernel_code_full,
-                    current_module_name,
-                    init_inputs, 
-                )
-                # print("Compilation successful.")
-                
-                new_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)# DONE3 针对21用例这里提取的PTXAS信息不太对劲
-                current_code_is_correct = True
-                if not module:
-                    status, details = "Failed (Compilation)", f"New kernel is COMPILATION INCORRECT.{err_msg}"
-                    print(f"❌ {status}")
-                    current_code_is_correct = False
-                    # continue 
-                else: 
-                    is_correct, err_str = cuda_utils.check_correctness(inputs, ref_outputs, module)
-                    if not is_correct:
-                        status, details = "Failed (Correctness)", f"New kernel is OUTPUT RESULT INCORRECT.{err_str}"
-                        print(f"❌ {status}")
-                        current_code_is_correct = False
-                        # continue 
-                if not current_code_is_correct:
-                    for i in range(5):
-                        verResult, errMessage = validate_extracted_code(new_kernel_code_full, init_inputs, inputs, ref_outputs)# 这个errMessage中对于结果错误的信息没有做前五个错误数据提取，是全部的错误数据
-                        if not verResult:
-                            print(f"尝试修正当前错误，第{i}次尝试")
-                            err_str = str(errMessage)
-                            print(f"--- Error Snippet ---\n{err_str[:500]}...\n---------------------")
-                            if len(err_str) > 4000:
-                                err_str = err_str[:2000] + "\n...[TRUNCATED]...\n" + err_str[-2000:]
-                            new_kernel_code_full = correct_cuda_kernel(
-                                full_pytorch_source_code,
-                                new_kernel_code_full,
-                                errMessage
-                            )
-                            if new_kernel_code_full:
-                                print("Code corrected by LLM. Retrying verification...")
-                            else:
-                                print("LLM correction failed (did not return valid code). Aborting.")
-                                break
+                # current_code_is_correct = False
+                for i in range(5):
+                    # gc.collect()
+                    verResult, errMessage = validate_extracted_code(new_kernel_code_full, init_inputs, inputs, ref_outputs)# 这个errMessage中对于结果错误的信息没有做前五个错误数据提取，是全部的错误数据
+                    if not verResult:
+                        print(f"尝试修正当前错误，第{i}次尝试")
+                        err_str = str(errMessage)
+                        print(f"--- Error Snippet ---\n{err_str[:500]}...\n---------------------")
+                        if len(err_str) > 4000:
+                            err_str = err_str[:2000] + "\n...[TRUNCATED]...\n" + err_str[-2000:]
+                        new_kernel_code_full = correct_cuda_kernel(
+                            full_pytorch_source_code,
+                            new_kernel_code_full,
+                            errMessage
+                        )
+                        if new_kernel_code_full:
+                            print("Code corrected by LLM. Retrying verification...")
                         else:
-                            current_code_is_correct = True
+                            print("LLM correction failed (did not return valid code). Aborting.")
                             break
-                current_module_name = current_module_name + "_verify"
-                # if not current_code_is_correct:
+                    else:
+                        # current_code_is_correct = True
+                        break
+                # gc.collect()
                 module, stdout_log, err_msg = cuda_utils.load_module(
                     new_kernel_code_full,
                     current_module_name,
@@ -893,9 +871,71 @@ def run_optimization_on_problem(
                     print(f"❌ {status}")
                     continue 
 
-                
 
-                    
+
+                # module, stdout_log, err_msg = cuda_utils.load_module(
+                #     new_kernel_code_full,
+                #     current_module_name,
+                #     init_inputs, 
+                # )
+                # # print("Compilation successful.")
+                
+                # new_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)# DONE3 针对21用例这里提取的PTXAS信息不太对劲
+                # current_code_is_correct = True
+                # if not module:
+                #     status, details = "Failed (Compilation)", f"New kernel is COMPILATION INCORRECT.{err_msg}"
+                #     print(f"❌ {status}")
+                #     current_code_is_correct = False
+                #     # continue 
+                # else: 
+                #     is_correct, err_str = cuda_utils.check_correctness(inputs, ref_outputs, module)
+                #     if not is_correct:
+                #         status, details = "Failed (Correctness)", f"New kernel is OUTPUT RESULT INCORRECT.{err_str}"
+                #         print(f"❌ {status}")
+                #         current_code_is_correct = False
+                #         # continue 
+                # if not current_code_is_correct:
+                #     for i in range(5):
+                #         verResult, errMessage = validate_extracted_code(new_kernel_code_full, init_inputs, inputs, ref_outputs)# 这个errMessage中对于结果错误的信息没有做前五个错误数据提取，是全部的错误数据
+                #         if not verResult:
+                #             print(f"尝试修正当前错误，第{i}次尝试")
+                #             err_str = str(errMessage)
+                #             print(f"--- Error Snippet ---\n{err_str[:500]}...\n---------------------")
+                #             if len(err_str) > 4000:
+                #                 err_str = err_str[:2000] + "\n...[TRUNCATED]...\n" + err_str[-2000:]
+                #             new_kernel_code_full = correct_cuda_kernel(
+                #                 full_pytorch_source_code,
+                #                 new_kernel_code_full,
+                #                 errMessage
+                #             )
+                #             if new_kernel_code_full:
+                #                 print("Code corrected by LLM. Retrying verification...")
+                #             else:
+                #                 print("LLM correction failed (did not return valid code). Aborting.")
+                #                 break
+                #         else:
+                #             current_code_is_correct = True
+                #             break
+                # current_module_name = current_module_name + "_verify"
+                # # if not current_code_is_correct:
+                # module, stdout_log, err_msg = cuda_utils.load_module(
+                #     new_kernel_code_full,
+                #     current_module_name,
+                #     init_inputs, 
+                # )
+                # # print("Compilation successful.")
+                
+                # new_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)# DONE3 针对21用例这里提取的PTXAS信息不太对劲
+                # if not module:
+                #     status, details = "Failed (Compilation)", f"New kernel is COMPILATION INCORRECT.{err_msg}"
+                #     print(f"❌ {status}")
+                #     continue 
+                # is_correct, err_str = cuda_utils.check_correctness(inputs, ref_outputs, module)
+                # if not is_correct:
+                #     status, details = "Failed (Correctness)", f"New kernel is OUTPUT RESULT INCORRECT.{err_str}"
+                #     print(f"❌ {status}")
+                #     continue 
+
             except Exception as e:
                 status, details = "An exception occurred during compilation or validation!", str(e)
                 print(f"❌ {status}")

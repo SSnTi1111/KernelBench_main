@@ -1,0 +1,119 @@
+[33mcommit cfb8ed675bedb395aef294a91154a64e5d88879f[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m)[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 17 11:29:16 2025 +0800
+
+    liuxitai:发现上次提交中的小问题,修改了一下,但是这种修改造成OOM,要想办法降低整个框架的Memory占用
+
+[33mcommit 23d70bc19e2e4bef8d31ff0afed44cc1d150203e[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 17 09:10:28 2025 +0800
+
+    liuxitai:对上次提交进行了测试,目前测试没有问题
+
+[33mcommit e1a24648c385b7809656b3ede48be9fe28148888[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Tue Dec 16 23:00:53 2025 +0800
+
+    liuxitai:尝试解决-对于优化迭代中的失败情况想办法处理,看能不能保存的都是对的-这个问题,还没测试
+
+[33mcommit 46f2a8db3fd304aa5e4c20b13046695d86a13feb[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Tue Dec 16 19:58:00 2025 +0800
+
+    liuxitai:上次提交中的TODO问题解决了.上次提交中的3内容简单实现了一下,2和4目前还没做
+
+[33mcommit 54db7fc1a5255d5a487e6cd279b2935081795781[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Sun Dec 14 16:52:25 2025 +0800
+
+    liuxitai:ModelNew调通了.1:存在TODO需要解决.2.对于优化迭代中的失败情况想办法处理,看能不能保存的都是对的3.对于优化循环中的编译错误,运行时错误或者结果错误的提取不到位,导致优化历史json中存储的details不是很详细,能不能想办法像validate_extracted_code一样提取不同的错误信息并保存在details中4.想办法能够读取历史信息,比如当优化轮数编程10轮的时候直接复用之前的5轮迭代
+
+[33mcommit a92c6d6a0845a1710eb3626790ecaebb8e56dd61[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Sat Dec 13 21:15:13 2025 +0800
+
+    liuxitai:NCU问题已经解决,文件清理的问题也解决了
+
+[33mcommit 9bc63b1f2a58bfaf1fd6c2ddd74a68eeeb4c15ee[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Sat Dec 13 20:44:44 2025 +0800
+
+    liuuxitai:上个问题解决了,现在在解决NCU问题,目前load_module中的文件不是临时文件了,不会自动清,这个之后也要想办法清一下
+
+[33mcommit e7ac4f066d8c0d59dd0f6dadace499e20dbf1b76[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Sat Dec 13 11:34:50 2025 +0800
+
+    liuxitai:解决了无法捕获到PTXAS信息的问题
+
+[33mcommit 3467a3603d5ba8654486162c484d5019981cf95e[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Sat Dec 13 01:07:39 2025 +0800
+
+    liuxitai:修改成ModelNew中,目前改到load_module无法捕获到PTXAS信息,经查看是没进行编译正在找原因
+
+[33mcommit d60c9c552c611a91ba9dcdec9316f9fe1c87f169[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Fri Dec 12 10:19:17 2025 +0800
+
+    liuxitai:从这里开始尝试改成ModelNew
+
+[33mcommit c1917695a27f8d6e2e5b26a2da94a39ae6af3e5b[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 10 21:35:46 2025 +0800
+
+    liuxitai:新跑了一些测试用例
+
+[33mcommit 1eaee7498757062ad0cf9dfc8cd03cf7cdd851d7[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 10 16:25:57 2025 +0800
+
+    liuxitai:又开始进行对kernelbench的测试,之前的xipler放弃了
+
+[33mcommit f7bdbfe4ea1798ce920414afc4e4c819b12a2cc5[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 10 14:05:09 2025 +0800
+
+    liuxitai:尝试跑通xpiler测试
+
+[33mcommit 6146627495de38a946672d71e34b37c3580d8ff2[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 10 10:26:07 2025 +0800
+
+    liuxitai:尝试解决mini_verison目录提交不了远程的问题
+
+[33mcommit 2eed99f4dbe9d50de1a2451ca3d39cf9edc43500[m
+Author: 刘锡泰 <10916854+liu-xitai@user.noreply.gitee.com>
+Date:   Wed Dec 10 02:24:49 2025 +0000
+
+    删除子模块 mini_version
+
+[33mcommit ac7155e52eefddedc020b49e2326a4e33dd4c0c6[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 10 10:18:00 2025 +0800
+
+    liuxitai:尝试修改mini_verison目录提交不上远程的问题
+
+[33mcommit 66cfcfc56987b9db07d8e7e98793dd2215217ebc[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 10 09:12:24 2025 +0800
+
+    liuxitai:删除了一些文件,~/KernelBench/KernelBench_main/test_mini_version/useful/11月8-11月9-不加优化原语测试结果的测试文件,是有用的,如果需要请回退到之前的版本
+
+[33mcommit abb42c6e51fabd3a988572d1f7a66f822f9368c3[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Wed Dec 10 09:06:57 2025 +0800
+
+    liuxitai:修改了一些小问题
+
+[33mcommit 424cc9f92f1bba62dedea7328b9fc2a716df73af[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Mon Dec 1 19:55:44 2025 +0800
+
+    liuxitai:测试21个用例
+
+[33mcommit 7b151670c313647756dec0c57cec0a16dc5cd56c[m
+Author: liuxitai <liuxitai0312@qq.com>
+Date:   Tue Nov 11 15:35:07 2025 +0800
+
+    liuxitai:测了KernelBench15个用例
