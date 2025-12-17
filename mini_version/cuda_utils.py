@@ -20,6 +20,7 @@ import traceback
 import weakref 
 import numpy as np  
 from typing import Dict, List, Any # <--- [修复] 添加 List
+import gc
 
 # 编译后的模块的全局缓存
 _gemm_module = None
@@ -350,6 +351,139 @@ def load_module(cuda_code, module_name, init_inputs):
     
     return model_instance, captured_log, captured_log
 
+# def load_module(cuda_code, module_name, init_inputs):
+#     # 1. 强制清理 Torch 扩展缓存 (保持原有逻辑)
+#     shutil.rmtree(os.path.expanduser('~/.cache/torch_extensions'), ignore_errors=True)
+    
+#     TEST_NN_MODEL_NAME = 'ModelNew'
+#     model_instance = None
+#     captured_log = ""
+#     err_msg = ""
+    
+#     # 声明变量以便在 finally 中清理
+#     module = None
+#     spec = None
+#     capturer = None
+    
+#     # [持久化路径]
+#     file_path = os.path.abspath(f"{module_name}.py")
+    
+#     try:
+#         # --- 动态重命名逻辑 ---
+#         timestamp = int(time.time() * 1000)
+#         pattern = r"(name\s*=\s*['\"])([\w_]+)(['\"])"
+        
+#         def replace_func(match):
+#             prefix = match.group(1)
+#             old_name = match.group(2)
+#             suffix = match.group(3)
+#             new_name = f"{old_name}_{timestamp}"
+#             return f"{prefix}{new_name}{suffix}"
+            
+#         cuda_code_modified = re.sub(pattern, replace_func, cuda_code, count=1)
+        
+#         # 2. 写入文件
+#         with open(file_path, "w") as f:
+#             f.write(cuda_code_modified)
+
+#         # 3. 加载模块
+#         spec = importlib.util.spec_from_file_location(TEST_NN_MODEL_NAME, file_path)
+#         if spec is None:
+#             print("ERROR in load_module: spec is None")
+#             if os.path.exists(file_path):
+#                 os.remove(file_path)
+#             return None, "", ""
+
+#         module = importlib.util.module_from_spec(spec)
+        
+#         # [注意] 这里注册到全局，如果不清理，模块永远存活
+#         sys.modules[TEST_NN_MODEL_NAME] = module
+
+#         # 4. 编译 & 捕获输出
+#         capturer = FDCapturer()
+#         try:
+#             with capturer:
+#                 spec.loader.exec_module(module)
+#         except Exception as e:
+#             print(f"Compilation Error: {e}")
+#             if os.path.exists(file_path):
+#                 os.remove(file_path)
+#             err_msg = extract_error_and_next_line(capturer.get_output())
+#             return None, capturer.get_output(), err_msg
+        
+#         captured_log = capturer.get_output()
+        
+#         # 5. 实例化模型
+#         model_class = getattr(module, TEST_NN_MODEL_NAME, None)
+#         if model_class is None:
+#             print("ERROR: Model class not found")
+#             if os.path.exists(file_path):
+#                 os.remove(file_path)
+#             return None, captured_log, captured_log
+
+#         try:
+#             if init_inputs is not None:
+#                 if isinstance(init_inputs, (list, tuple)):
+#                     model_instance = model_class(*init_inputs)
+#                 elif isinstance(init_inputs, dict):
+#                     model_instance = model_class(**init_inputs)
+#                 else:
+#                     model_instance = model_class(init_inputs)
+#             else:
+#                 model_instance = model_class()
+            
+#             # 绑定文件路径
+#             model_instance.__file__ = file_path
+            
+#             # 注册自动清理钩子 (当 model_instance 销毁时删除文件)
+#             weakref.finalize(
+#                 model_instance, 
+#                 lambda p=file_path: os.remove(p) if os.path.exists(p) else None
+#             )
+            
+#         except Exception as e:
+#             print(f"Instantiation Error: {e}")
+#             if os.path.exists(file_path):
+#                 os.remove(file_path)
+#             return None, captured_log, captured_log
+
+#     except Exception as e:
+#         print(f"General Error inside load_module: {e}")
+#         traceback.print_exc()
+#         if os.path.exists(file_path):
+#             os.remove(file_path)
+#         return None, "", str(e)
+
+#     finally:
+#         # ==========================================================
+#         # [核心优化] 函数退出前的强力垃圾回收
+#         # ==========================================================
+        
+#         # 1. 从全局 sys.modules 中移除模块引用
+#         # model_instance 已经实例化，它内部的 __class__ 会持有 module 的引用，
+#         # 所以只要 model_instance 活着，代码就能跑。
+#         # 但从 sys.modules 移除后，当 model_instance 死亡时，module 也会随之死亡。
+#         if TEST_NN_MODEL_NAME in sys.modules:
+#             del sys.modules[TEST_NN_MODEL_NAME]
+
+#         # 2. 删除局部大对象引用
+#         if 'cuda_code_modified' in locals(): del cuda_code_modified
+#         if 'capturer' in locals() and capturer is not None: del capturer
+#         if 'spec' in locals(): del spec
+        
+#         # 注意：不要 del model_instance，这是我们要返回的！
+#         # 也不要 del captured_log，这是要返回的日志 (str类型占内存不大，可以接受)
+
+#         # 3. 显式断开 module 引用
+#         if module is not None:
+#             del module
+            
+#         # 4. 强制触发垃圾回收
+#         # 这会清理掉刚才产生的编译图、AST对象等循环引用
+#         gc.collect()
+
+#     return model_instance, captured_log, captured_log
+
 # [!!! 已更新 !!!] 接受 wrapper_function_name
 # def load_module(cuda_code, module_name,init_inputs):
 #     shutil.rmtree(os.path.expanduser('~/.cache/torch_extensions'), ignore_errors=True)# IMPORTANT：调用load_module之前强制清空缓存，因为pytorch会根据cuda_code中load_inline中的name选项是否一致判断这个是否之前编译过，如果编译过就不会编译导致获取不到PTSAX信息（但是实际上为了获取PTXAS信息重新编译会影响整个流程的时间）
@@ -496,158 +630,269 @@ def run_gemm(inputs, module):
 
 
 
+# def check_correctness(inputs, ref_outputs, module):
+#     """
+#     (此函数已更新)
+#     检查通用内核的正确性。
+#     返回: (is_correct: bool, error_msg: str)
+#     """
+#     print("Running evolved kernel for correctness check...")
+#     data_type_info = ""
+#     try:
+#         # 确保输入在 GPU 上
+#         # gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
+#         # gpu_ref_outputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in ref_outputs]
+
+#         C_evolved_outputs = run_gemm(inputs, module)
+        
+#         # 确保 C_evolved_outputs 是一个列表，以便进行 zip
+#         # if not isinstance(C_evolved_outputs, (list, tuple)):
+#         #     C_evolved_outputs = [C_evolved_outputs]
+
+#         # 1. 检查输出数量
+#         if len(C_evolved_outputs) != len(ref_outputs):
+#             msg = (f"Failed (Correctness): Output count mismatch. "
+#                    f"Expected {len(ref_outputs)}, got {len(C_evolved_outputs)}.")
+#             print(f"--- KERNEL IS INCORRECT ---")
+#             print(msg)
+#             print("---------------------------")
+#             return False, msg
+
+#         is_correct = True
+#         error_msgs = []
+
+#         def compare_outputs(a, b, atol=1e-2, rtol=1e-2):
+#             # global data_type_info
+#             # tuple 情况
+#             if isinstance(a, tuple) and isinstance(b, tuple):
+#                 if len(a) != len(b):
+#                     return False
+#                 return all(compare_outputs(x, y, atol, rtol) for x, y in zip(a, b))
+
+#             # tensor 对 tensor
+#             if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+#                 return torch.allclose(a, b, atol=atol, rtol=rtol)
+
+#             # # 标量对标量
+#             if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+#                 return abs(a - b) <= (atol + rtol * abs(b))
+
+#             print("输出类型不匹配：", type(a), type(b))
+#             data_type_info = f"The value type of some values in the return value is incorrect. The current value type is {type(b)} and the correct value type is f{type(a)}"
+#             return False
+        
+#         if C_evolved_outputs.shape != ref_outputs.shape:
+#             is_correct = False
+#             msg = (f"Failed (Correctness): Shape mismatch at Output. "
+#                     f"Expected {ref_outputs.shape}, got {C_evolved_outputs.shape}.")
+#             error_msgs.append(msg)
+#             print(msg)
+#             return False,msg
+#         if not compare_outputs(C_evolved_outputs,ref_outputs): 
+#             is_correct = False
+#             if not data_type_info:
+#                return False, data_type_info
+#             # --- [核心修改] 捕获前 5 个错误值 ---
+#             diff = torch.abs(C_evolved_outputs - ref_outputs)
+#             # 计算允许的误差范围
+#             tol = 1e-2 + 1e-2 * torch.abs(ref_outputs)
+#             # 找出超出误差的掩码
+#             error_mask = diff > tol
+#             # 获取错误索引
+#             error_indices = torch.nonzero(error_mask, as_tuple=False)
+#             num_errors = error_indices.size(0)
+            
+#             msg_header = f"Failed (Correctness): Output has {num_errors} mismatches (total elements: {ref_outputs.numel()})."
+#             error_details = [msg_header]
+#             error_details.append("Top 5 Mismatches (Index | Reference Value | Actual Value):")
+            
+#             # 取前 5 个
+#             for j in range(min(5, num_errors)):
+#                 idx = error_indices[j]
+#                 idx_tuple = tuple(idx.tolist())
+#                 ref_val = ref_outputs[idx_tuple].item()
+#                 act_val = C_evolved_outputs[idx_tuple].item()
+#                 error_details.append(f"  [{j}] Index: {idx_tuple} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
+            
+#             full_msg = "\n".join(error_details)
+#             error_msgs.append(full_msg)
+            
+#             print(f"--- KERNEL IS INCORRECT (Output) ---")
+#             print(full_msg)
+#             print("---------------------------")
+#             # 只要发现一个输出不对，通常就可以返回了，或者收集所有错误
+#             # 这里我们收集第一个主要错误后直接返回，避免 Prompt 过长
+#             return False, full_msg
+        
+#         if is_correct:
+#             return True, ""
+#         else:
+#             # 只有形状错误会走到这里
+#             return False, "\n".join(error_msgs)
+
+#         # # 2. 逐个检查输出张量
+#         # for i, (evolved_t, ref_t) in enumerate(zip(C_evolved_outputs, gpu_ref_outputs)):
+#         #     # 检查形状
+#         #     if evolved_t.shape != ref_t.shape:
+#         #         is_correct = False
+#         #         msg = (f"Failed (Correctness): Shape mismatch at Output {i}. "
+#         #                f"Expected {ref_t.shape}, got {evolved_t.shape}.")
+#         #         error_msgs.append(msg)
+#         #         print(msg)
+#         #         continue # 继续检查下一个输出，或者直接返回也可以
+
+#         #     # 检查数值 (atol=1e-2, rtol=1e-2)
+#         #     if not torch.allclose(evolved_t, ref_t, atol=1e-2, rtol=1e-2):
+#         #         is_correct = False
+                
+#         #         # --- [核心修改] 捕获前 5 个错误值 ---
+#         #         diff = torch.abs(evolved_t - ref_t)
+#         #         # 计算允许的误差范围
+#         #         tol = 1e-2 + 1e-2 * torch.abs(ref_t)
+#         #         # 找出超出误差的掩码
+#         #         error_mask = diff > tol
+#         #         # 获取错误索引
+#         #         error_indices = torch.nonzero(error_mask, as_tuple=False)
+#         #         num_errors = error_indices.size(0)
+                
+#         #         msg_header = f"Failed (Correctness): Output {i} has {num_errors} mismatches (total elements: {ref_t.numel()})."
+#         #         error_details = [msg_header]
+#         #         error_details.append("Top 5 Mismatches (Index | Reference Value | Actual Value):")
+                
+#         #         # 取前 5 个
+#         #         for j in range(min(5, num_errors)):
+#         #             idx = error_indices[j]
+#         #             idx_tuple = tuple(idx.tolist())
+#         #             ref_val = ref_t[idx_tuple].item()
+#         #             act_val = evolved_t[idx_tuple].item()
+#         #             error_details.append(f"  [{j}] Index: {idx_tuple} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
+                
+#         #         full_msg = "\n".join(error_details)
+#         #         error_msgs.append(full_msg)
+                
+#         #         print(f"--- KERNEL IS INCORRECT (Output {i}) ---")
+#         #         print(full_msg)
+#         #         print("---------------------------")
+#         #         # 只要发现一个输出不对，通常就可以返回了，或者收集所有错误
+#         #         # 这里我们收集第一个主要错误后直接返回，避免 Prompt 过长
+#         #         return False, full_msg
+
+#         # if is_correct:
+#         #     return True, ""
+#         # else:
+#         #     # 只有形状错误会走到这里
+#         #     return False, "\n".join(error_msgs)
+
 def check_correctness(inputs, ref_outputs, module):
     """
-    (此函数已更新)
+    (此函数已更新 - 内存优化版)
     检查通用内核的正确性。
-    返回: (is_correct: bool, error_msg: str)
+    函数退出时会强制清理所有中间变量占用的显存。
     """
     print("Running evolved kernel for correctness check...")
-    data_type_info = ""
-    try:
-        # 确保输入在 GPU 上
-        # gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
-        # gpu_ref_outputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in ref_outputs]
+    
+    # [内存管理] 初始化所有可能产生的大对象变量为 None
+    # 这样 finally 块可以安全地检查和删除它们
+    C_evolved_outputs = None
+    diff = None
+    tol = None
+    error_mask = None
+    error_indices = None
+    
+    # 内部辅助函数 (保持不变)
+    def compare_outputs(a, b, atol=1e-2, rtol=1e-2):
+        nonlocal data_type_info # 使用 nonlocal 修改外部变量
+        if isinstance(a, tuple) and isinstance(b, tuple):
+            if len(a) != len(b): return False
+            return all(compare_outputs(x, y, atol, rtol) for x, y in zip(a, b))
+        if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+            return torch.allclose(a, b, atol=atol, rtol=rtol)
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            return abs(a - b) <= (atol + rtol * abs(b))
+        
+        # print("输出类型不匹配：", type(a), type(b))
+        data_type_info = f"Type mismatch: expected {type(b)}, got {type(a)}"
+        return False
 
+    data_type_info = ""
+
+    try:
+        # --- 1. 执行 Kernel ---
         C_evolved_outputs = run_gemm(inputs, module)
         
-        # 确保 C_evolved_outputs 是一个列表，以便进行 zip
-        # if not isinstance(C_evolved_outputs, (list, tuple)):
-        #     C_evolved_outputs = [C_evolved_outputs]
+        # --- 2. 检查输出数量 ---
+        # 如果是单个 Tensor，统一转为 list/tuple 处理可能会方便些，
+        # 但既然下面用了 shape 对比，这里假设 run_gemm 返回的和 ref_outputs 结构一致
+        current_len = len(C_evolved_outputs) if isinstance(C_evolved_outputs, (list, tuple)) else 1
+        ref_len = len(ref_outputs) if isinstance(ref_outputs, (list, tuple)) else 1
 
-        # 1. 检查输出数量
-        if len(C_evolved_outputs) != len(ref_outputs):
+        if current_len != ref_len:
             msg = (f"Failed (Correctness): Output count mismatch. "
-                   f"Expected {len(ref_outputs)}, got {len(C_evolved_outputs)}.")
+                   f"Expected {ref_len}, got {current_len}.")
             print(f"--- KERNEL IS INCORRECT ---")
             print(msg)
             print("---------------------------")
             return False, msg
 
-        is_correct = True
-        error_msgs = []
+        # --- 3. 检查 Shape ---
+        # 注意：这里假设两者都是 Tensor 直接比较 shape
+        # 如果是 list/tuple，这里可能需要调整逻辑，但照搬你原代码的逻辑：
+        if hasattr(C_evolved_outputs, 'shape') and hasattr(ref_outputs, 'shape'):
+            if C_evolved_outputs.shape != ref_outputs.shape:
+                msg = (f"Failed (Correctness): Shape mismatch at Output. "
+                       f"Expected {ref_outputs.shape}, got {C_evolved_outputs.shape}.")
+                print(msg)
+                return False, msg
 
-        def compare_outputs(a, b, atol=1e-2, rtol=1e-2):
-            # global data_type_info
-            # tuple 情况
-            if isinstance(a, tuple) and isinstance(b, tuple):
-                if len(a) != len(b):
-                    return False
-                return all(compare_outputs(x, y, atol, rtol) for x, y in zip(a, b))
-
-            # tensor 对 tensor
-            if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-                return torch.allclose(a, b, atol=atol, rtol=rtol)
-
-            # # 标量对标量
-            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-                return abs(a - b) <= (atol + rtol * abs(b))
-
-            print("输出类型不匹配：", type(a), type(b))
-            data_type_info = f"The value type of some values in the return value is incorrect. The current value type is {type(b)} and the correct value type is f{type(a)}"
-            return False
-        
-        if C_evolved_outputs.shape != ref_outputs.shape:
-            is_correct = False
-            msg = (f"Failed (Correctness): Shape mismatch at Output. "
-                    f"Expected {ref_outputs.shape}, got {C_evolved_outputs.shape}.")
-            error_msgs.append(msg)
-            print(msg)
-            return False,msg
-        if not compare_outputs(C_evolved_outputs,ref_outputs): 
-            is_correct = False
-            if not data_type_info:
+        # --- 4. 检查数值 ---
+        if not compare_outputs(C_evolved_outputs, ref_outputs): 
+            # 类型不匹配
+            if data_type_info:
                return False, data_type_info
-            # --- [核心修改] 捕获前 5 个错误值 ---
-            diff = torch.abs(C_evolved_outputs - ref_outputs)
-            # 计算允许的误差范围
-            tol = 1e-2 + 1e-2 * torch.abs(ref_outputs)
-            # 找出超出误差的掩码
-            error_mask = diff > tol
-            # 获取错误索引
-            error_indices = torch.nonzero(error_mask, as_tuple=False)
-            num_errors = error_indices.size(0)
             
-            msg_header = f"Failed (Correctness): Output has {num_errors} mismatches (total elements: {ref_outputs.numel()})."
-            error_details = [msg_header]
-            error_details.append("Top 5 Mismatches (Index | Reference Value | Actual Value):")
+            # --- [核心修改] 错误分析 (产生大量临时 Tensor) ---
+            try:
+                # 计算差值
+                diff = torch.abs(C_evolved_outputs - ref_outputs)
+                tol = 1e-2 + 1e-2 * torch.abs(ref_outputs)
+                error_mask = diff > tol
+                
+                # 获取错误索引 (GPU -> CPU 转换可能在这里隐式发生，产生同步)
+                error_indices = torch.nonzero(error_mask, as_tuple=False)
+                num_errors = error_indices.size(0)
+                
+                msg_header = f"Failed (Correctness): Output has {num_errors} mismatches (total elements: {ref_outputs.numel()})."
+                error_details = [msg_header, "Top 5 Mismatches (Index | Reference Value | Actual Value):"]
+                
+                # 取前 5 个 (只提取数值，不保留 Tensor 引用)
+                for j in range(min(5, num_errors)):
+                    idx = error_indices[j]
+                    idx_tuple = tuple(idx.tolist())
+                    
+                    # 使用 .item() 将 GPU 标量转为 Python float，断开计算图引用
+                    ref_val = ref_outputs[idx_tuple].item()
+                    act_val = C_evolved_outputs[idx_tuple].item()
+                    
+                    error_details.append(f"  [{j}] Index: {idx_tuple} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
+                
+                full_msg = "\n".join(error_details)
+                print(f"--- KERNEL IS INCORRECT (Output) ---")
+                print(full_msg)
+                print("---------------------------")
+                
+                return False, full_msg
             
-            # 取前 5 个
-            for j in range(min(5, num_errors)):
-                idx = error_indices[j]
-                idx_tuple = tuple(idx.tolist())
-                ref_val = ref_outputs[idx_tuple].item()
-                act_val = C_evolved_outputs[idx_tuple].item()
-                error_details.append(f"  [{j}] Index: {idx_tuple} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
-            
-            full_msg = "\n".join(error_details)
-            error_msgs.append(full_msg)
-            
-            print(f"--- KERNEL IS INCORRECT (Output) ---")
-            print(full_msg)
-            print("---------------------------")
-            # 只要发现一个输出不对，通常就可以返回了，或者收集所有错误
-            # 这里我们收集第一个主要错误后直接返回，避免 Prompt 过长
-            return False, full_msg
-        
-        if is_correct:
-            return True, ""
-        else:
-            # 只有形状错误会走到这里
-            return False, "\n".join(error_msgs)
+            finally:
+                # [内部清理] 这里的临时变量用完即弃
+                # 虽然外层 finally 也会清理，但如果 error calculation 耗尽了显存，
+                # 尽早释放有助于防止后续步骤 OOM
+                if diff is not None: del diff
+                if tol is not None: del tol
+                if error_mask is not None: del error_mask
+                if error_indices is not None: del error_indices
+                diff, tol, error_mask, error_indices = None, None, None, None
 
-        # # 2. 逐个检查输出张量
-        # for i, (evolved_t, ref_t) in enumerate(zip(C_evolved_outputs, gpu_ref_outputs)):
-        #     # 检查形状
-        #     if evolved_t.shape != ref_t.shape:
-        #         is_correct = False
-        #         msg = (f"Failed (Correctness): Shape mismatch at Output {i}. "
-        #                f"Expected {ref_t.shape}, got {evolved_t.shape}.")
-        #         error_msgs.append(msg)
-        #         print(msg)
-        #         continue # 继续检查下一个输出，或者直接返回也可以
-
-        #     # 检查数值 (atol=1e-2, rtol=1e-2)
-        #     if not torch.allclose(evolved_t, ref_t, atol=1e-2, rtol=1e-2):
-        #         is_correct = False
-                
-        #         # --- [核心修改] 捕获前 5 个错误值 ---
-        #         diff = torch.abs(evolved_t - ref_t)
-        #         # 计算允许的误差范围
-        #         tol = 1e-2 + 1e-2 * torch.abs(ref_t)
-        #         # 找出超出误差的掩码
-        #         error_mask = diff > tol
-        #         # 获取错误索引
-        #         error_indices = torch.nonzero(error_mask, as_tuple=False)
-        #         num_errors = error_indices.size(0)
-                
-        #         msg_header = f"Failed (Correctness): Output {i} has {num_errors} mismatches (total elements: {ref_t.numel()})."
-        #         error_details = [msg_header]
-        #         error_details.append("Top 5 Mismatches (Index | Reference Value | Actual Value):")
-                
-        #         # 取前 5 个
-        #         for j in range(min(5, num_errors)):
-        #             idx = error_indices[j]
-        #             idx_tuple = tuple(idx.tolist())
-        #             ref_val = ref_t[idx_tuple].item()
-        #             act_val = evolved_t[idx_tuple].item()
-        #             error_details.append(f"  [{j}] Index: {idx_tuple} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
-                
-        #         full_msg = "\n".join(error_details)
-        #         error_msgs.append(full_msg)
-                
-        #         print(f"--- KERNEL IS INCORRECT (Output {i}) ---")
-        #         print(full_msg)
-        #         print("---------------------------")
-        #         # 只要发现一个输出不对，通常就可以返回了，或者收集所有错误
-        #         # 这里我们收集第一个主要错误后直接返回，避免 Prompt 过长
-        #         return False, full_msg
-
-        # if is_correct:
-        #     return True, ""
-        # else:
-        #     # 只有形状错误会走到这里
-        #     return False, "\n".join(error_msgs)
+        return True, ""
 
     except Exception as e:
         err_str = f"Runtime Error during check_correctness: {e}\n{traceback.format_exc()}"
@@ -655,6 +900,37 @@ def check_correctness(inputs, ref_outputs, module):
         print(err_str)
         print("-----------------------------")
         return False, err_str
+
+    finally:
+        # ==========================================================
+        # [关键修改] 函数退出前的终极清理
+        # ==========================================================
+        
+        # 1. 删除主要的计算结果 Tensor
+        if C_evolved_outputs is not None:
+            del C_evolved_outputs
+            
+        # 2. 删除错误分析阶段可能遗留的 Tensor (如果内部 try 没跑完)
+        if diff is not None: del diff
+        if tol is not None: del tol
+        if error_mask is not None: del error_mask
+        if error_indices is not None: del error_indices
+        
+        # 3. 强制垃圾回收 Python 对象
+        gc.collect()
+        
+        # 4. 强制清空 CUDA 缓存，将显存归还给操作系统 (给 NCU 腾地)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        # print("Memory released in check_correctness.")
+
+#     except Exception as e:
+#         err_str = f"Runtime Error during check_correctness: {e}\n{traceback.format_exc()}"
+#         print(f"--- KERNEL RUNTIME FAILED ---")
+#         print(err_str)
+#         print("-----------------------------")
+#         return False, err_str
         
 # vvv --- PTXAS 解析器 (保持不变) --- vvv
 # def parse_ptxas_info(log_str: str) -> Dict[str, float]: #针对TODO3做的修改，详细的修改内容见👇

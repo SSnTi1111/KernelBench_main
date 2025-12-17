@@ -527,10 +527,228 @@ def extract_error_and_next_line(text):
                 results.append(lines[i + 1])
     return "\n".join(results)
 
+# def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outputs=None):
+
+#     TEST_NN_MODEL_NAME = 'ModelNew'
+
+#     try:
+#         with tempfile.TemporaryDirectory() as temp_dir:
+#             temp_file = os.path.join(temp_dir, "cuda_code.py")
+#             with open(temp_file, "w") as f:
+#                 f.write(cuda_code)
+
+#             spec = importlib.util.spec_from_file_location(TEST_NN_MODEL_NAME, temp_file)
+#             if spec is None:
+#                 return False, {"exeErr": "Error: Failed to get module spec.", "ioErr": ""}
+
+#             module = importlib.util.module_from_spec(spec)
+#             sys.modules[TEST_NN_MODEL_NAME] = module
+#             # ---------- 执行模块 & 捕获所有输出 ----------
+#             try:
+#                 # 优先使用 exec_module（能更快给出语法错误）
+#                 spec.loader.exec_module(module)
+#             except Exception:
+#                 # exec_module 失败后，再用 subprocess 捕获详细错误
+#                 proc = subprocess.run(
+#                     [sys.executable, temp_file],
+#                     capture_output=True,
+#                     text=True
+#                 )
+
+#                 stderr = proc.stderr.strip()
+#                 stdout = proc.stdout.strip()
+
+#                 err_msg = ""
+#                 if stdout:
+#                     err_msg += "\n[stdout]\n" + stdout
+#                 if stderr:
+#                     err_msg += "\n[stderr]\n" + stderr
+
+#                 if proc.returncode != 0:
+#                     return False, {
+#                         "exeErr": f"Execution failed with return code {proc.returncode}.{extract_error_and_next_line(err_msg)}",
+#                         "ioErr": ""
+#                     }
+
+
+#             # try:
+#             #     # 创建 StringIO 对象来捕获 stdout 和 stderr
+#             #     stdout_capture = io.StringIO()
+#             #     stderr_capture = io.StringIO()
+
+#             #     # 重定向 stdout 和 stderr
+#             #     with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+#             #         # 尝试执行模块
+#             #         try:
+#             #             spec.loader.exec_module(module)
+#             #         except Exception as e:
+#             #             # 如果直接执行失败，尝试通过 subprocess 运行以捕获更多输出
+#             #             try:
+#             #                 result = subprocess.run(
+#             #                     [sys.executable, temp_file],
+#             #                     capture_output=True,
+#             #                     text=True,
+#             #                     check=True
+#             #                 )
+#             #                 # 如果 subprocess 成功运行，附加其输出
+#             #                 stdout_capture.write(result.stdout or "")
+#             #                 stderr_capture.write(result.stderr or "")
+#             #             except subprocess.CalledProcessError as sub_e:
+#             #                 # 如果 subprocess 失败，捕获其输出
+#             #                 stdout_capture.write(sub_e.stdout or "")
+#             #                 stderr_capture.write(sub_e.stderr or "")
+#             #                 raise sub_e  # 继续抛出异常以进入外层 except
+
+#             #     # 如果没有异常，清理捕获的输出（根据需求可保留）
+#             #     captured_stdout = stdout_capture.getvalue().strip()
+#             #     captured_stderr = stderr_capture.getvalue().strip()
+#             #     additional_output = ""
+#             #     if captured_stdout:
+#             #         additional_output += f"\nCaptured stdout:\n{captured_stdout}"
+#             #     if captured_stderr:
+#             #         additional_output += f"\nCaptured stderr:\n{captured_stderr}"
+
+#             # except Exception as e:
+#             #     # 捕获异常并附加所有输出
+#             #     captured_stdout = stdout_capture.getvalue().strip()
+#             #     captured_stderr = stderr_capture.getvalue().strip()
+#             #     additional_output = ""
+#             #     if captured_stdout:
+#             #         additional_output += f"\nCaptured stdout:\n{captured_stdout}"
+#             #     if captured_stderr:
+#             #         additional_output += f"\nCaptured stderr:\n{captured_stderr}"
+#             #     additional_output = extract_error_and_next_line(additional_output)
+#             #     return False, {
+#             #         "exeErr": f"Error: Failed to execute module: {str(e)}{additional_output}",
+#             #         "ioErr": ""
+#             #     }
+
+#             # 检查 ModelNew 类是否存在
+#             model_class = getattr(module, TEST_NN_MODEL_NAME, None)
+#             if model_class is None:
+#                 return False, {"exeErr": f"Error: Class '{TEST_NN_MODEL_NAME}' not found in the module.", "ioErr": ""}
+
+#             # 实例化模型
+#             try:
+#                 if init_inputs is not None:
+#                     if isinstance(init_inputs, (list, tuple)):
+#                         model_instance = model_class(*init_inputs)
+#                     elif isinstance(init_inputs, dict):
+#                         model_instance = model_class(**init_inputs)
+#                     else:
+#                         # 单值初始化
+#                         model_instance = model_class(init_inputs)
+#                 else:
+#                     # 无初始化参数
+#                     model_instance = model_class()
+#             except Exception as e:
+#                 return False, {"exeErr": f"Error: Failed to instantiate '{TEST_NN_MODEL_NAME}': {str(e)}", "ioErr": ""}
+
+#             # 检查 forward 方法是否存在
+#             if not hasattr(model_instance, 'forward'):
+#                 return False, {"exeErr": f"Error: '{TEST_NN_MODEL_NAME}' does not have a 'forward' method.", "ioErr": ""}
+#             if test_inputs is not None:
+#                 # print("正在进行validate_extracted_code中的IO验证……")
+#                 # if not isinstance(test_inputs, (list, tuple)): model_output = (test_inputs,)
+#                 # if not isinstance(test_outputs, (list, tuple)): test_outputs = (test_outputs,)
+#                 # for i, (real_input, real_output) in enumerate(zip(test_inputs, test_outputs)):
+#                 output = model_instance(*test_inputs)  # CUDA 的输出
+                
+#                 def compare_outputs(a, b, atol=1e-2, rtol=1e-2):
+#                     global data_type_info
+#                     # tuple 情况
+#                     if isinstance(a, tuple) and isinstance(b, tuple):
+#                         if len(a) != len(b):
+#                             return False
+#                         return all(compare_outputs(x, y, atol, rtol) for x, y in zip(a, b))
+
+#                     # tensor 对 tensor
+#                     if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+#                         return torch.allclose(a, b, atol=atol, rtol=rtol)
+
+#                     # # 标量对标量
+#                     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+#                         return abs(a - b) <= (atol + rtol * abs(b))
+
+#                     print("输出类型不匹配：", type(a), type(b))
+#                     data_type_info = f"The value type of some values in the return value is incorrect. The current value type is {type(b)} and the correct value type is f{type(a)}"
+#                     return False
+
+
+#                 if compare_outputs(output, test_outputs, atol=1e-2, rtol=1e-2):
+#                     global data_type_info
+#                     data_type_info = ""
+#                     print(f"Validate_extracted_code:Test passed")
+#                 else:
+#                     print(f"Test failed: output mismatch")
+
+#                     if not data_type_info:
+
+#                         # --- [核心修改] 捕获前 5 个错误值 ---
+#                         diff = torch.abs(output - test_outputs)
+#                         # 计算允许的误差范围
+#                         tol = 1e-2 + 1e-2 * torch.abs(test_outputs)
+#                         # 找出超出误差的掩码
+#                         error_mask = diff > tol
+#                         # 获取错误索引
+#                         error_indices = torch.nonzero(error_mask, as_tuple=False)
+#                         num_errors = error_indices.size(0)
+                        
+#                         msg_header = f"Failed (Correctness): Output has {num_errors} mismatches (total elements: {test_outputs.numel()})."
+#                         error_details = [msg_header]
+#                         error_details.append("Top 5 Mismatches (Index | Reference Value | Actual Value):")
+                        
+#                         # 取前 5 个
+#                         for j in range(min(5, num_errors)):
+#                             idx = error_indices[j]
+#                             idx_tuple = tuple(idx.tolist())
+#                             ref_val = test_outputs[idx_tuple].item()
+#                             act_val = output[idx_tuple].item()
+#                             error_details.append(f"  [{j}] Index: {idx_tuple} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
+                        
+#                         full_msg = "\n".join(error_details)
+
+#                         return False, {
+#                             "exeErr": "",
+#                             "ioErr": (
+#                                 # f"{data_type_info}"
+#                                 "For the current test input, the output generated by the CUDA code cannot match "
+#                                 "the correct output, with a certain margin of error allowed, that is, satisfying "
+#                                 "torch.allclose(cuda_output, pytorch_output, atol=1e-3, rtol=1e-3). "
+#                                 # f"The current input is:{test_inputs} "
+#                                 # f"The output of the CUDA code is:{output} "
+#                                 # f"The output of the Triton code is:{test_outputs}"
+#                                 f"{full_msg}"
+#                             )
+#                         }
+#                     else:
+#                         return False, {
+#                             "exeErr": "",
+#                             "ioErr": (
+#                                 f"{data_type_info}"
+#                                 # "For the current test input, the output generated by the CUDA code cannot match "
+#                                 # "the correct output, with a certain margin of error allowed, that is, satisfying "
+#                                 # "torch.allclose(triton_output, cuda_output, atol=1e-3, rtol=1e-3). "
+#                                 # f"The current input is:{test_inputs} "
+#                                 # f"The output of the CUDA code is:{output} "
+#                                 # f"The output of the Triton code is:{test_outputs}"
+#                             )
+#                         }
+#         return True, None
+#     except Exception as e:
+#         return False, {
+#             "exeErr": f"Error during validation: {str(e)}",
+#             "ioErr": ""
+#         }
+
 def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outputs=None):
-
     TEST_NN_MODEL_NAME = 'ModelNew'
-
+    
+    # 定义需要在 finally 中清理的变量名，防止 UnboundLocalError
+    module = None
+    model_instance = None
+    output = None
+    
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_file = os.path.join(temp_dir, "cuda_code.py")
@@ -543,9 +761,9 @@ def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outpu
 
             module = importlib.util.module_from_spec(spec)
             sys.modules[TEST_NN_MODEL_NAME] = module
+            
             # ---------- 执行模块 & 捕获所有输出 ----------
             try:
-                # 优先使用 exec_module（能更快给出语法错误）
                 spec.loader.exec_module(module)
             except Exception:
                 # exec_module 失败后，再用 subprocess 捕获详细错误
@@ -554,74 +772,17 @@ def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outpu
                     capture_output=True,
                     text=True
                 )
-
                 stderr = proc.stderr.strip()
                 stdout = proc.stdout.strip()
-
                 err_msg = ""
-                if stdout:
-                    err_msg += "\n[stdout]\n" + stdout
-                if stderr:
-                    err_msg += "\n[stderr]\n" + stderr
+                if stdout: err_msg += "\n[stdout]\n" + stdout
+                if stderr: err_msg += "\n[stderr]\n" + stderr
 
                 if proc.returncode != 0:
                     return False, {
                         "exeErr": f"Execution failed with return code {proc.returncode}.{extract_error_and_next_line(err_msg)}",
                         "ioErr": ""
                     }
-
-
-            # try:
-            #     # 创建 StringIO 对象来捕获 stdout 和 stderr
-            #     stdout_capture = io.StringIO()
-            #     stderr_capture = io.StringIO()
-
-            #     # 重定向 stdout 和 stderr
-            #     with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
-            #         # 尝试执行模块
-            #         try:
-            #             spec.loader.exec_module(module)
-            #         except Exception as e:
-            #             # 如果直接执行失败，尝试通过 subprocess 运行以捕获更多输出
-            #             try:
-            #                 result = subprocess.run(
-            #                     [sys.executable, temp_file],
-            #                     capture_output=True,
-            #                     text=True,
-            #                     check=True
-            #                 )
-            #                 # 如果 subprocess 成功运行，附加其输出
-            #                 stdout_capture.write(result.stdout or "")
-            #                 stderr_capture.write(result.stderr or "")
-            #             except subprocess.CalledProcessError as sub_e:
-            #                 # 如果 subprocess 失败，捕获其输出
-            #                 stdout_capture.write(sub_e.stdout or "")
-            #                 stderr_capture.write(sub_e.stderr or "")
-            #                 raise sub_e  # 继续抛出异常以进入外层 except
-
-            #     # 如果没有异常，清理捕获的输出（根据需求可保留）
-            #     captured_stdout = stdout_capture.getvalue().strip()
-            #     captured_stderr = stderr_capture.getvalue().strip()
-            #     additional_output = ""
-            #     if captured_stdout:
-            #         additional_output += f"\nCaptured stdout:\n{captured_stdout}"
-            #     if captured_stderr:
-            #         additional_output += f"\nCaptured stderr:\n{captured_stderr}"
-
-            # except Exception as e:
-            #     # 捕获异常并附加所有输出
-            #     captured_stdout = stdout_capture.getvalue().strip()
-            #     captured_stderr = stderr_capture.getvalue().strip()
-            #     additional_output = ""
-            #     if captured_stdout:
-            #         additional_output += f"\nCaptured stdout:\n{captured_stdout}"
-            #     if captured_stderr:
-            #         additional_output += f"\nCaptured stderr:\n{captured_stderr}"
-            #     additional_output = extract_error_and_next_line(additional_output)
-            #     return False, {
-            #         "exeErr": f"Error: Failed to execute module: {str(e)}{additional_output}",
-            #         "ioErr": ""
-            #     }
 
             # 检查 ModelNew 类是否存在
             model_class = getattr(module, TEST_NN_MODEL_NAME, None)
@@ -636,110 +797,152 @@ def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outpu
                     elif isinstance(init_inputs, dict):
                         model_instance = model_class(**init_inputs)
                     else:
-                        # 单值初始化
                         model_instance = model_class(init_inputs)
                 else:
-                    # 无初始化参数
                     model_instance = model_class()
             except Exception as e:
                 return False, {"exeErr": f"Error: Failed to instantiate '{TEST_NN_MODEL_NAME}': {str(e)}", "ioErr": ""}
 
-            # 检查 forward 方法是否存在
+            # 检查 forward 方法
             if not hasattr(model_instance, 'forward'):
                 return False, {"exeErr": f"Error: '{TEST_NN_MODEL_NAME}' does not have a 'forward' method.", "ioErr": ""}
+            
             if test_inputs is not None:
-                # print("正在进行validate_extracted_code中的IO验证……")
-                # if not isinstance(test_inputs, (list, tuple)): model_output = (test_inputs,)
-                # if not isinstance(test_outputs, (list, tuple)): test_outputs = (test_outputs,)
-                # for i, (real_input, real_output) in enumerate(zip(test_inputs, test_outputs)):
-                output = model_instance(*test_inputs)  # CUDA 的输出
-                
-                def compare_outputs(a, b, atol=1e-2, rtol=1e-2):
-                    global data_type_info
-                    # tuple 情况
-                    if isinstance(a, tuple) and isinstance(b, tuple):
-                        if len(a) != len(b):
-                            return False
-                        return all(compare_outputs(x, y, atol, rtol) for x, y in zip(a, b))
+                # 运行模型获取输出
+                output = model_instance(*test_inputs) 
 
-                    # tensor 对 tensor
+                def compare_outputs(a, b, atol=1e-2, rtol=1e-2):# 目前这个函数的内存占用比较高，这个函数运算过程中的高内存占用避免不了，但是问题是这个函数返回时内存不会立即释放
+                    global data_type_info
+                    if isinstance(a, tuple) and isinstance(b, tuple):
+                        if len(a) != len(b): return False
+                        return all(compare_outputs(x, y, atol, rtol) for x, y in zip(a, b))
                     if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
                         return torch.allclose(a, b, atol=atol, rtol=rtol)
-
-                    # # 标量对标量
                     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
                         return abs(a - b) <= (atol + rtol * abs(b))
-
-                    print("输出类型不匹配：", type(a), type(b))
-                    data_type_info = f"The value type of some values in the return value is incorrect. The current value type is {type(b)} and the correct value type is f{type(a)}"
+                    data_type_info = f"Type mismatch: {type(b)} vs {type(a)}"
                     return False
 
-
                 if compare_outputs(output, test_outputs, atol=1e-2, rtol=1e-2):
-                    global data_type_info
-                    data_type_info = ""
-                    print(f"Validate_extracted_code:Test passed")
+                    print(f"Validate_extracted_code: Test passed")
                 else:
                     print(f"Test failed: output mismatch")
+                    
+                    # # 生成错误报告
+                    # # 注意：这里计算 diff 也会产生临时 Tensor，用完要由 GC 回收
+                    # diff = torch.abs(output - test_outputs)
+                    # tol = 1e-2 + 1e-2 * torch.abs(test_outputs)
+                    # error_mask = diff > tol
+                    # error_indices = torch.nonzero(error_mask, as_tuple=False)
+                    # num_errors = error_indices.size(0)
+                    
+                    # msg_header = f"Failed (Correctness): Output has {num_errors} mismatches."
+                    # error_details = [msg_header, "Top 5 Mismatches:"]
+                    
+                    # for j in range(min(5, num_errors)):
+                    #     idx = tuple(error_indices[j].tolist())
+                    #     ref_val = test_outputs[idx].item()
+                    #     act_val = output[idx].item()
+                    #     error_details.append(f"  Idx: {idx} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
+                    
+                    # full_msg = "\n".join(error_details)
 
-                    if not data_type_info:
+                    # 初始化变量，防止后面代码报错导致 UnboundLocalError
+                    diff = None
+                    tol = None
+                    error_mask = None
+                    error_indices = None
+                    full_msg = ""
 
-                        # --- [核心修改] 捕获前 5 个错误值 ---
+                    try:
+                        # --- [1. 计算阶段：产生 GPU 临时 Tensor] ---
                         diff = torch.abs(output - test_outputs)
-                        # 计算允许的误差范围
+                        # 注意：这里 test_outputs 可能是 CPU 也可能是 GPU，确保计算在同设备
                         tol = 1e-2 + 1e-2 * torch.abs(test_outputs)
-                        # 找出超出误差的掩码
                         error_mask = diff > tol
-                        # 获取错误索引
                         error_indices = torch.nonzero(error_mask, as_tuple=False)
                         num_errors = error_indices.size(0)
                         
+                        # --- [2. 字符串构建阶段：只产生 CPU 字符串] ---
                         msg_header = f"Failed (Correctness): Output has {num_errors} mismatches (total elements: {test_outputs.numel()})."
                         error_details = [msg_header]
                         error_details.append("Top 5 Mismatches (Index | Reference Value | Actual Value):")
                         
-                        # 取前 5 个
+                        # 取前 5 个错误 (只取值 item()，不持有 Tensor 引用)
                         for j in range(min(5, num_errors)):
-                            idx = error_indices[j]
-                            idx_tuple = tuple(idx.tolist())
-                            ref_val = test_outputs[idx_tuple].item()
-                            act_val = output[idx_tuple].item()
-                            error_details.append(f"  [{j}] Index: {idx_tuple} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
+                            idx = tuple(error_indices[j].tolist())
+                            ref_val = test_outputs[idx].item()
+                            act_val = output[idx].item()
+                            error_details.append(f"  [{j}] Index: {idx} | Ref: {ref_val:.6f} | Act: {act_val:.6f}")
                         
                         full_msg = "\n".join(error_details)
 
-                        return False, {
-                            "exeErr": "",
-                            "ioErr": (
-                                # f"{data_type_info}"
-                                "For the current test input, the output generated by the CUDA code cannot match "
-                                "the correct output, with a certain margin of error allowed, that is, satisfying "
-                                "torch.allclose(cuda_output, pytorch_output, atol=1e-3, rtol=1e-3). "
-                                # f"The current input is:{test_inputs} "
-                                # f"The output of the CUDA code is:{output} "
-                                # f"The output of the Triton code is:{test_outputs}"
-                                f"{full_msg}"
-                            )
-                        }
-                    else:
-                        return False, {
-                            "exeErr": "",
-                            "ioErr": (
-                                f"{data_type_info}"
-                                # "For the current test input, the output generated by the CUDA code cannot match "
-                                # "the correct output, with a certain margin of error allowed, that is, satisfying "
-                                # "torch.allclose(triton_output, cuda_output, atol=1e-3, rtol=1e-3). "
-                                # f"The current input is:{test_inputs} "
-                                # f"The output of the CUDA code is:{output} "
-                                # f"The output of the Triton code is:{test_outputs}"
-                            )
-                        }
+                    except Exception as e:
+                        full_msg = f"Error during error reporting: {str(e)}"
+                    
+                    finally:
+                        # --- [3. 清理阶段：在 return 之前立即销毁临时 Tensor] ---
+                        # 这一步至关重要，确保在进入外层 finally 的 empty_cache 之前，
+                        # 这些临时变量占用的显存标记为可释放。
+                        # 这些临时变量占特别大的显存
+                        if diff is not None: del diff
+                        if tol is not None: del tol
+                        if error_mask is not None: del error_mask
+                        if error_indices is not None: del error_indices
+                        
+                        # 这里的局部变量清理完后，显存引用计数归零。
+                        # 接下来代码执行 return，会触发函数最外层的 finally (gc.collect + empty_cache)，
+                        # 此时显存就能被真正物理释放了。
+                    
+                    # 验证失败返回前，finally 块会自动执行清理
+                    return False, {
+                        "exeErr": "",
+                        "ioErr": full_msg
+                    }
+
         return True, None
+
     except Exception as e:
         return False, {
             "exeErr": f"Error during validation: {str(e)}",
             "ioErr": ""
         }
+
+    finally:
+        # [!!! 核心修改 !!!] 强制清理显存和引用
+        
+        # 1. 删除大对象引用
+        if output is not None: 
+            del output
+        if model_instance is not None: 
+            del model_instance
+        
+        # if model_class is not None:
+        #     del model_class
+
+        # if test_inputs is not None:
+        #     del test_inputs
+        
+        # if test_outputs is not None:
+        #     del test_outputs
+        
+        # if init_inputs is not None:
+        #     del init_inputs
+        
+        # 2. 从 sys.modules 中移除模块，防止全局污染和内存泄漏
+        if TEST_NN_MODEL_NAME in sys.modules:
+            del sys.modules[TEST_NN_MODEL_NAME]
+        
+        # 3. 删除模块对象本身
+        if module is not None:
+            del module
+            
+        # 4. 强制进行垃圾回收
+        gc.collect()
+        
+        # 5. 强制清空 CUDA 缓存，将显存还给操作系统（给 NCU 用）
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()#这个函数执行完之后会释放上面compare_outputs函数占用的大内存，这种释放是安全的
 
 def main(args):
     print("--- 优化配置 (来自 mini_version/config.py) ---")
@@ -916,14 +1119,14 @@ def main(args):
             print(f"Attempt 1/{args.max_correction_attempts + 1}: Generating initial C++/CUDA kernel...")
             
             # 3.1. 初始生成 (Attempt 0)
-            # cuda_code = generate_initial_cuda_kernel(
-            #     full_pytorch_source_code, 
-            #     cpp_wrapper_gpu_inputs, # [!!! 已修复 !!!] 
-            #     ref_outputs, 
-            # )
+            cuda_code = generate_initial_cuda_kernel(
+                full_pytorch_source_code, 
+                cpp_wrapper_gpu_inputs, # [!!! 已修复 !!!] 
+                ref_outputs, 
+            )
 
             #坏
-            cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n// Kernel: element-wise Sigmoid\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel(const scalar_t* __restrict__ input,\n                               scalar_t* __restrict__ output,\n                               const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        scalar_t val = input[idx];\n        output[idx] = sigmoid_func(val);\n    }\n}\n\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n    auto output = torch::empty_like(input);\n\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    const int64_t blocks = (numel + threads - 1) / threads;\n\n    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "sigmoid_forward_cuda", ([&] {\n        sigmoid_kernel<scalar_t><<<blocks, threads, 0,\n                                   at::cuda::getCurrentCUDAStream()>>>(\n            input.data_ptr<scalar_t>(),\n            output.data_ptr<scalar_t>(),\n            numel);\n    }));\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n    return output;\n}\n\'\'\'\n\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\nsigmoid_module = load_inline(\n    name=\'sigmoid_cuda\',\n    cpp_sources=cpp_src,\n    cuda_sources=source,\n    functions=[\'sigmoid_forward\'],\n    with_cuda=True,\n verbose=True,\n    extra_cuda_cflags=[\'-O2\',\'--ptxas-options=-v\']\n)\n\n\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
+            # cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n// Kernel: element-wise Sigmoid\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel(const scalar_t* __restrict__ input,\n                               scalar_t* __restrict__ output,\n                               const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        scalar_t val = input[idx];\n        output[idx] = sigmoid_func(val);\n    }\n}\n\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n    auto output = torch::empty_like(input);\n\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    const int64_t blocks = (numel + threads - 1) / threads;\n\n    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "sigmoid_forward_cuda", ([&] {\n        sigmoid_kernel<scalar_t><<<blocks, threads, 0,\n                                   at::cuda::getCurrentCUDAStream()>>>(\n            input.data_ptr<scalar_t>(),\n            output.data_ptr<scalar_t>(),\n            numel);\n    }));\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n    return output;\n}\n\'\'\'\n\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\nsigmoid_module = load_inline(\n    name=\'sigmoid_cuda\',\n    cpp_sources=cpp_src,\n    cuda_sources=source,\n    functions=[\'sigmoid_forward\'],\n    with_cuda=True,\n verbose=True,\n    extra_cuda_cflags=[\'-O2\',\'--ptxas-options=-v\']\n)\n\n\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
             #好
             # cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\n# ---------------------------------------------------------------------------\n# CUDA source (kernels + C++/ATen host wrappers)\n# ---------------------------------------------------------------------------\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <cuda_fp16.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n/* ---------------------------------------------------------\n * Scalar fallback kernel : one-element per thread\n * ------------------------------------------------------- */\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel_scalar(const scalar_t* __restrict__ input,\n                                      scalar_t* __restrict__ output,\n                                      const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        output[idx] = sigmoid_func(input[idx]);\n    }\n}\n\n/* ---------------------------------------------------------\n * Vectorised kernel : VEC elements per thread\n * VEC = 4 for float (float4, 16-byte transaction)\n *     = 2 for double (double2, 16-byte transaction)\n * The last (numel % VEC) elements are processed by a\n * single thread (vec_idx == 0) inside the same kernel.\n * ------------------------------------------------------- */\ntemplate <typename scalar_t , int VEC>\n__global__ void sigmoid_kernel_vec(const scalar_t* __restrict__ input,\n                                   scalar_t*       __restrict__ output,\n                                   const int64_t   vec_elems,\n                                   const int64_t   tail_start,\n                                   const int64_t   tail_size) {\n    using VecT = typename std::conditional< (sizeof(scalar_t)==4),\n                                            float4,              // 4 x fp32 = 16 B\n                                            double2               // 2 x fp64 = 16 B\n                                          >::type;\n\n    const int64_t vec_idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    /* ---------------- Aligned, vectorised path ---------------- */\n    if (vec_idx < vec_elems) {\n        VecT v = reinterpret_cast<const VecT*>(input)[vec_idx];\n\n        scalar_t* v_elem = reinterpret_cast<scalar_t*>(&v);\n        #pragma unroll\n        for (int i = 0; i < VEC; ++i) {\n            v_elem[i] = sigmoid_func(v_elem[i]);\n        }\n\n        reinterpret_cast<VecT*>(output)[vec_idx] = v;\n    }\n\n    /* ---------------- Tail handling by one thread ------------- */\n    if (tail_size && vec_idx == 0) {\n        for (int64_t j = 0; j < tail_size; ++j) {\n            const int64_t idx = tail_start + j;\n            output[idx] = sigmoid_func(input[idx]);\n        }\n    }\n}\n\n/* ---------------------------------------------------------\n * Host launcher\n * ------------------------------------------------------- */\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n\n    auto output = torch::empty_like(input);\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    // Fast path : fp32 / fp64 with vectorised kernel\n    if (input.scalar_type() == at::kFloat || input.scalar_type() == at::kDouble) {\n\n        if (input.scalar_type() == at::kFloat) {\n            using scalar_t = float;\n            constexpr int  VEC = 4;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                // Fallback to scalar kernel if vector part is empty\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        } else { // double\n            using scalar_t = double;\n            constexpr int  VEC = 2;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        }\n\n    } else {\n        /* Generic scalar kernel for remaining dtypes (half, bfloat16, etc.) */\n        const int64_t blocks = (numel + threads - 1) / threads;\n        AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(),\n                                            "sigmoid_forward_cuda_scalar", ([&] {\n            sigmoid_kernel_scalar<scalar_t><<<blocks, threads, 0, stream>>>(\n                input.data_ptr<scalar_t>(),\n                output.data_ptr<scalar_t>(),\n                numel);\n        }));\n    }\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n\n    return output;\n}\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# C++ function prototypes\n# ---------------------------------------------------------------------------\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# Build & load extension\n# ---------------------------------------------------------------------------\nsigmoid_module = load_inline(\n    name         = \'sigmoid_cuda_opt\',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = [\'sigmoid_forward\'],\n    with_cuda    = True,\n    verbose      = True,\n    extra_cuda_cflags=[\'-O3\', \'--ptxas-options=-v\']\n)\n\n# ---------------------------------------------------------------------------\n# PyTorch Module wrapper\n# ---------------------------------------------------------------------------\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
 
@@ -1013,7 +1216,8 @@ def main(args):
             best_time_ms = float('inf')
             best_kernel_code_full = initial_cuda_code # 默认为初始代码
             status = "Failed (Unknown)"
-            
+            del pytorch_kernel_module
+            torch.cuda.empty_cache()
             try:
                 # [!!! 核心调用 !!!] 
                 # (这部分不变，因为它依赖 mini_version, 
