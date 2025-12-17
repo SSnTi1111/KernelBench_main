@@ -551,7 +551,7 @@ def run_optimization_on_problem(
     # 1. 初始化
     device = torch.device(config.DEVICE)
     
-    best_kernel_code_cuda = initial_cuda_code # <--- [!!! 已更新 !!!]
+    best_kernel_code_cuda = initial_cuda_code  
     best_time_ms = float('inf')
     best_ptxas_metrics = {}
     best_ncu_metrics = {}
@@ -559,11 +559,10 @@ def run_optimization_on_problem(
     
     optimization_history = []
     
-    # (加载历史记录的代码已更新)
-    if os.path.exists(history_file_path): # <--- [!!! 已更新 !!!]
+    if os.path.exists(history_file_path): 
         print(f"Loading existing history from {history_file_path}")
         try:
-            with open(history_file_path, 'r', encoding='utf-8') as f: # <--- [!!! 已更新 !!!]
+            with open(history_file_path, 'r', encoding='utf-8') as f:  
                 optimization_history = json.load(f)
             
             found_best = False
@@ -587,14 +586,14 @@ def run_optimization_on_problem(
     # 2. 获取基线性能 (Round 0)
     if not optimization_history: 
         print("\n--- Round 0: Compiling and analyzing baseline (naive) kernel ---")
-        current_module_name = f"{problem_name}_0" # <--- [!!! 已更新 !!!]
+        current_module_name = f"{problem_name}_0"  
         try:
             module, stdout_log, stderr_log = cuda_utils.load_module(
                 # cpp_source, 
                 best_kernel_code_cuda, 
                 current_module_name,
                 init_inputs
-                # wrapper_function_name=wrapper_function_name # <--- [!!! 已更新 !!!]
+                # wrapper_function_name=wrapper_function_name  
             )
             print("Baseline kernel compiled successfully.")
             best_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)
@@ -603,7 +602,7 @@ def run_optimization_on_problem(
             is_correct = cuda_utils.check_correctness(inputs, ref_outputs, module)
             if not is_correct:
                 print("❌ Baseline kernel is INCORRECT. Exiting.")
-                return {"error": "Baseline kernel incorrect."} # <--- [!!! 已更新 !!!]
+                return {"error": "Baseline kernel incorrect."}  
                 
             print("Baseline kernel is correct. Benchmarking...")
             # [!!! 已更新 !!!]
@@ -614,9 +613,9 @@ def run_optimization_on_problem(
             best_ncu_metrics = cuda_utils.get_real_ncu_metrics(
                 module.__file__, 
                 current_module_name, 
-                # kernel_name,           # <--- [!!! 已更新 !!!]
-                # wrapper_function_name, # <--- [!!! 已更新 !!!]
-                inputs                 # <--- [!!! 已更新 !!!]
+                # kernel_name,            
+                # wrapper_function_name,  
+                inputs                  
             )
             current_ncu_metrics = best_ncu_metrics # liuxitai:到这里目前已经改好了
             
@@ -671,7 +670,7 @@ def run_optimization_on_problem(
 
         except Exception as e:
             print(f"❌ Baseline kernel failed compilation or runtime. Exiting. \n{e}")
-            return {"error": f"Baseline failed: {e}"} # <--- [!!! 已更新 !!!]
+            return {"error": f"Baseline failed: {e}"}  
     
     if not current_ncu_metrics: 
         current_ncu_metrics = best_ncu_metrics if best_ncu_metrics else {}
@@ -715,7 +714,7 @@ def run_optimization_on_problem(
             #     prompts.PLANNER_SYSTEM_PROMPT,
             #     f"Optimization History:\n{history_summary}\n\n"#DONE 1 这个提示词信息需要重新设计一下，history_summary光有这些信息没有用啊，不知道每个指标的对应的代码是什么啊，每个记录的代码是在哪个版本上做的修改啊，这些都不知道
             #     f"=== Hardware Metrics for Current Best Kernel(Need to be optimized) ===\n{metrics_summary}\n\n"
-            #     f"Current Best C++/CUDA Source (Time: {best_time_ms:.3f} ms):\n{parent_kernel_code}" # <--- [!!! 已更新 !!!]
+            #     f"Current Best C++/CUDA Source (Time: {best_time_ms:.3f} ms):\n{parent_kernel_code}"  
             # )
             # if not planner_response or "OPTIMIZATION_GOAL:" not in planner_response:
             #     status, details = "Failed (Planner)", "Planner did not return a valid goal."
@@ -874,7 +873,7 @@ def run_optimization_on_problem(
                         else:
                             current_code_is_correct = True
                             break
-
+                current_module_name = current_module_name + "_verify"
                 # if not current_code_is_correct:
                 module, stdout_log, err_msg = cuda_utils.load_module(
                     new_kernel_code_full,
@@ -931,7 +930,7 @@ def run_optimization_on_problem(
                 #         new_kernel_code_cuda_only = new_kernel_code_full # 无法分离
                 #         print(f"[Warning] Round {i}: Could not auto-extract kernel. Saving full code.")
 
-                best_kernel_code_cuda = new_kernel_code_full # <--- [!!! 已更新 !!!]
+                best_kernel_code_cuda = new_kernel_code_full  
                 best_ptxas_metrics = new_ptxas_metrics
                 best_ncu_metrics = new_ncu_metrics
 
@@ -1088,10 +1087,10 @@ def run_optimization_on_problem(
         "_best_kernel.cu"
     )
     with open(final_kernel_path, "w", encoding='utf-8') as f:
-        f.write(best_kernel_code_cuda) # <--- [!!! 已更新 !!!]
+        f.write(best_kernel_code_cuda)  
     print(f"Best kernel C++/CUDA source saved to {final_kernel_path}")
     
-    with open(history_file_path, 'w') as f: # <--- [!!! 已更新 !!!]
+    with open(history_file_path, 'w') as f:  
         json.dump(optimization_history, f, indent=2)
     print(f"Optimization history saved to {history_file_path}")
     
