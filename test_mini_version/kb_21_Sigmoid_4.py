@@ -116,7 +116,7 @@ torch::Tensor sigmoid_cuda_inplace(torch::Tensor x);
 '''
 
 sigmoid_mod = load_inline(
-    name         = 'sigmoid_mod_ip',
+    name         = 'sigmoid_mod_ip_1765982826680',
     cpp_sources  = cpp_src,
     cuda_sources = source,
     functions    = ['sigmoid_cuda_inplace'],

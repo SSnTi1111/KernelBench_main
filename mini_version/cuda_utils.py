@@ -21,6 +21,7 @@ import weakref
 import numpy as np  
 from typing import Dict, List, Any # <--- [修复] 添加 List
 import gc
+import copy
 
 # 编译后的模块的全局缓存
 _gemm_module = None
@@ -621,11 +622,12 @@ def run_gemm(inputs, module):
     (此函数已更新)
     运行当前加载的模块。
     """
-    if module is None:
-        raise RuntimeError("模块未编译。请先调用 load_module()")
+    # if module is None:
+    #     raise RuntimeError("模块未编译。请先调用 load_module()")
     
     # 使用 getattr 动态调用 wrapper
     # wrapper_func = getattr(_gemm_module, wrapper_function_name)
+    
     return module(*inputs)
 
 
@@ -815,10 +817,11 @@ def check_correctness(inputs, ref_outputs, module):
         return False
 
     data_type_info = ""
-
+    cloned_inputs = None
     try:
+        cloned_inputs = copy.deepcopy(inputs)
         # --- 1. 执行 Kernel ---
-        C_evolved_outputs = run_gemm(inputs, module)
+        C_evolved_outputs = run_gemm(cloned_inputs, module)
         
         # --- 2. 检查输出数量 ---
         # 如果是单个 Tensor，统一转为 list/tuple 处理可能会方便些，
@@ -909,7 +912,11 @@ def check_correctness(inputs, ref_outputs, module):
         # 1. 删除主要的计算结果 Tensor
         if C_evolved_outputs is not None:
             del C_evolved_outputs
-            
+
+        if cloned_inputs is not None:
+            # 1. 解除变量引用，使 Tensor 对象的引用计数减 1
+            del cloned_inputs
+
         # 2. 删除错误分析阶段可能遗留的 Tensor (如果内部 try 没跑完)
         if diff is not None: del diff
         if tol is not None: del tol
@@ -1308,25 +1315,42 @@ def benchmark_kernel(inputs, module, warmup_runs=5, benchmark_runs=10):
     #     raise RuntimeError("模块未编译。")
     
     # gpu_inputs = [t.cuda() if isinstance(t, torch.Tensor) and not t.is_cuda else t for t in inputs]
+    cloned_inputs = None
+    try:
+        cloned_inputs = copy.deepcopy(inputs)
+        print(f"Warming up evolved kernel ({warmup_runs} runs)...")
+        for _ in range(warmup_runs):
+            _ = run_gemm(cloned_inputs, module)
+        torch.cuda.synchronize()
 
-    print(f"Warming up evolved kernel ({warmup_runs} runs)...")
-    for _ in range(warmup_runs):
-        _ = run_gemm(inputs, module)
-    torch.cuda.synchronize()
+        # 测量
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
 
-    # 测量
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(benchmark_runs):
+            _ = run_gemm(cloned_inputs, module)
+        end.record()
+
+        torch.cuda.synchronize()
+        avg_time_ms = start.elapsed_time(end) / benchmark_runs
+        print(f"Evolved kernel benchmark: {avg_time_ms:.3f} ms")
+        return avg_time_ms
+    finally:
+        # ==========================================================
+        # [关键修改] 自动清理逻辑
+        # ==========================================================
+        # 无论 try 块中发生了什么（正常 return output，或者抛出 Exception），
+        # finally 块中的代码永远会在函数退出前最后执行。
+        
+        if cloned_inputs is not None:
+            # 1. 解除变量引用，使 Tensor 对象的引用计数减 1
+            del cloned_inputs
+            
+            # 2. (可选) 如果显存极度紧张，可以手动触发 Python GC
+            # 这能确保 PyTorch 的 C++ 后端更快收到“显存可释放”的信号
+            # gc.collect()
     
-    start.record()
-    for _ in range(benchmark_runs):
-        _ = run_gemm(inputs, module)
-    end.record()
-    
-    torch.cuda.synchronize()
-    avg_time_ms = start.elapsed_time(end) / benchmark_runs
-    print(f"Evolved kernel benchmark: {avg_time_ms:.3f} ms")
-    return avg_time_ms
 # ^^^ --- 性能评测函数结束 --- ^^^
 
 
