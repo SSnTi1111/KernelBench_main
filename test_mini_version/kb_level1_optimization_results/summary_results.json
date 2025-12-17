@@ -270,9 +270,9 @@
     "status": "Success"
   },
   "21_Sigmoid": {
-    "baseline_ms": 7.433605346679688,
-    "best_cuda_ms": 7.371775817871094,
-    "speedup": 1.0083873316736929,
-    "status": "Success"
+    "baseline_ms": 7.433215942382812,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed optimization loop: cannot access local variable 'metrics_shown' where it is not associated with a value"
   }
 }

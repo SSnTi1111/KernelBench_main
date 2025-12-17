@@ -549,7 +549,7 @@ def check_correctness(inputs, ref_outputs, module):
         
         if C_evolved_outputs.shape != ref_outputs.shape:
             is_correct = False
-            msg = (f"Failed (Correctness): Shape mismatch at Output {i}. "
+            msg = (f"Failed (Correctness): Shape mismatch at Output. "
                     f"Expected {ref_outputs.shape}, got {C_evolved_outputs.shape}.")
             error_msgs.append(msg)
             print(msg)
@@ -568,7 +568,7 @@ def check_correctness(inputs, ref_outputs, module):
             error_indices = torch.nonzero(error_mask, as_tuple=False)
             num_errors = error_indices.size(0)
             
-            msg_header = f"Failed (Correctness): Output {i} has {num_errors} mismatches (total elements: {ref_outputs.numel()})."
+            msg_header = f"Failed (Correctness): Output has {num_errors} mismatches (total elements: {ref_outputs.numel()})."
             error_details = [msg_header]
             error_details.append("Top 5 Mismatches (Index | Reference Value | Actual Value):")
             

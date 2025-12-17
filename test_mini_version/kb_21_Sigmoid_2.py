@@ -14,7 +14,7 @@ source = r'''
 
 template <typename scalar_t>
 __device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {
-    return scalar_t(1) / (scalar_t(1) + exp(-x));
+    return scalar_t(1) / (scalar_t(1) + exp(x));
 }
 
 /* ---------------------------------------------------------
@@ -76,6 +76,9 @@ __global__ void sigmoid_kernel_vec(const scalar_t* __restrict__ input,
  * Host launcher
  * ------------------------------------------------------- */
 torch::Tensor sigmoid_forward(torch::Tensor input) {
+    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");
+    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");
+
     auto output = torch::empty_like(input);
     const int64_t numel = input.numel();
     const int threads = 256;
@@ -143,6 +146,9 @@ torch::Tensor sigmoid_forward(torch::Tensor input) {
         }));
     }
 
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);
+
     return output;
 }
 '''
@@ -158,7 +164,7 @@ torch::Tensor sigmoid_forward(torch::Tensor input);
 # Build & load extension
 # ---------------------------------------------------------------------------
 sigmoid_module = load_inline(
-    name         = 'sigmoid_cuda_opt',
+    name         = 'sigmoid_cuda_opt_1765933647412',
     cpp_sources  = cpp_src,
     cuda_sources = source,
     functions    = ['sigmoid_forward'],

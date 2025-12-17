@@ -1,7 +1,7 @@
 {
   "problem_name": "kb_21_Sigmoid",
-  "baseline_ms": 7.4328680419921875,
-  "best_cuda_ms": 11.443302154541016,
-  "speedup": 0.649538738172934,
+  "baseline_ms": 7.433502807617187,
+  "best_cuda_ms": 7.356313323974609,
+  "speedup": 1.0104929575784942,
   "last_updated_round": 1
 }

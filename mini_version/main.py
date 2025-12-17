@@ -710,110 +710,112 @@ def run_optimization_on_problem(
             # [!!! 已更新 !!!] 合并 C++ 和 CUDA 以获取完整上下文
             parent_kernel_code = best_kernel_code_cuda
             
-            planner_response = agents.call_llm(
-                "planner", 
-                prompts.PLANNER_SYSTEM_PROMPT,
-                f"Optimization History:\n{history_summary}\n\n"#DONE 1 这个提示词信息需要重新设计一下，history_summary光有这些信息没有用啊，不知道每个指标的对应的代码是什么啊，每个记录的代码是在哪个版本上做的修改啊，这些都不知道
-                f"=== Hardware Metrics for Current Best Kernel(Need to be optimized) ===\n{metrics_summary}\n\n"
-                f"Current Best C++/CUDA Source (Time: {best_time_ms:.3f} ms):\n{parent_kernel_code}" # <--- [!!! 已更新 !!!]
-            )
-            if not planner_response or "OPTIMIZATION_GOAL:" not in planner_response:
-                status, details = "Failed (Planner)", "Planner did not return a valid goal."
-                print(f"❌ {status} {details}")
-                continue 
+            # planner_response = agents.call_llm(
+            #     "planner", 
+            #     prompts.PLANNER_SYSTEM_PROMPT,
+            #     f"Optimization History:\n{history_summary}\n\n"#DONE 1 这个提示词信息需要重新设计一下，history_summary光有这些信息没有用啊，不知道每个指标的对应的代码是什么啊，每个记录的代码是在哪个版本上做的修改啊，这些都不知道
+            #     f"=== Hardware Metrics for Current Best Kernel(Need to be optimized) ===\n{metrics_summary}\n\n"
+            #     f"Current Best C++/CUDA Source (Time: {best_time_ms:.3f} ms):\n{parent_kernel_code}" # <--- [!!! 已更新 !!!]
+            # )
+            # if not planner_response or "OPTIMIZATION_GOAL:" not in planner_response:
+            #     status, details = "Failed (Planner)", "Planner did not return a valid goal."
+            #     print(f"❌ {status} {details}")
+            #     continue 
             
-            if "BOTTLENECK_ANALYSIS:" in planner_response:
-                 bottleneck_analysis = planner_response.split("BOTTLENECK_ANALYSIS:")[1].split("OPTIMIZATION_GOAL:")[0].strip()
-                 print(f"[Planner Agent] Bottleneck identified: {bottleneck_analysis}")
-            else:
-                status, details = "Failed (Planner)", "Planner did not output BOTTLENECK_ANALYSIS."
-                print(f"❌ {status} {details}")
-                continue
+            # if "BOTTLENECK_ANALYSIS:" in planner_response:
+            #      bottleneck_analysis = planner_response.split("BOTTLENECK_ANALYSIS:")[1].split("OPTIMIZATION_GOAL:")[0].strip()
+            #      print(f"[Planner Agent] Bottleneck identified: {bottleneck_analysis}")
+            # else:
+            #     status, details = "Failed (Planner)", "Planner did not output BOTTLENECK_ANALYSIS."
+            #     print(f"❌ {status} {details}")
+            #     continue
                  
-            opt_goal = planner_response.split("OPTIMIZATION_GOAL:")[1].strip()
-            print(f"[Planner Agent] Goal: {opt_goal}")
-            print("-----------------------LXT:planner_response----------------------")
-            print(planner_response)
-            print("-----------------------LXT:planner_response----------------------")
+            # opt_goal = planner_response.split("OPTIMIZATION_GOAL:")[1].strip()
+            # print(f"[Planner Agent] Goal: {opt_goal}")
+            # print("-----------------------LXT:planner_response----------------------")
+            # print(planner_response)
+            # print("-----------------------LXT:planner_response----------------------")
             
-            # 2. Tool Agent
-            print("[Tool Agent] Selecting metrics...")
-            all_metric_names = list(current_ncu_metrics.keys())
-            print("-----------------------LXT:all_metric_names----------------------")
-            print(all_metric_names)
-            print("-----------------------LXT:all_metric_names----------------------")
-            if not all_metric_names:
-                all_metric_names = config.BASE_NCU_METRICS_LIST_EXAMPLE
+            # # 2. Tool Agent
+            # print("[Tool Agent] Selecting metrics...")
+            # all_metric_names = list(current_ncu_metrics.keys())
+            # print("-----------------------LXT:all_metric_names----------------------")
+            # print(all_metric_names)
+            # print("-----------------------LXT:all_metric_names----------------------")
+            # if not all_metric_names:
+            #     all_metric_names = config.BASE_NCU_METRICS_LIST_EXAMPLE
                 
-            # tool_response = agents.call_llm(# DONE👇:这个提示词也要重新设计一下，只有27个指标和优化目标，让LLM从中选5个，可是不知道现在要优化的任务代码是什么啊？
+            # # tool_response = agents.call_llm(# DONE👇:这个提示词也要重新设计一下，只有27个指标和优化目标，让LLM从中选5个，可是不知道现在要优化的任务代码是什么啊？
+            # #     "tool", 
+            # #     prompts.TOOL_SYSTEM_PROMPT,
+            # #     f"All Available NCU Metric Names ({len(all_metric_names)}): {all_metric_names}\n\nOptimization Goal: {opt_goal}"
+            # # )
+            # tool_response = agents.call_llm(
             #     "tool", 
             #     prompts.TOOL_SYSTEM_PROMPT,
-            #     f"All Available NCU Metric Names ({len(all_metric_names)}): {all_metric_names}\n\nOptimization Goal: {opt_goal}"
+            #     f"Optimization Goal: {opt_goal}\n\n"
+            #     f"Planner's Bottleneck Analysis: {bottleneck_analysis}\n\n"
+            #     f"Current C++/CUDA Source:\n{parent_kernel_code}\n\n" 
+            #     f"All Available NCU Metric Names ({len(all_metric_names)}): {all_metric_names}"
             # )
-            tool_response = agents.call_llm(
-                "tool", 
-                prompts.TOOL_SYSTEM_PROMPT,
-                f"Optimization Goal: {opt_goal}\n\n"
-                f"Planner's Bottleneck Analysis: {bottleneck_analysis}\n\n"
-                f"Current C++/CUDA Source:\n{parent_kernel_code}\n\n" 
-                f"All Available NCU Metric Names ({len(all_metric_names)}): {all_metric_names}"
-            )
 
-            print("-----------------------LXT:tool_response----------------------")
-            print(tool_response)
-            print("-----------------------LXT:tool_response----------------------")
+            # print("-----------------------LXT:tool_response----------------------")
+            # print(tool_response)
+            # print("-----------------------LXT:tool_response----------------------")
             
-            relevant_metric_names = extract_metrics(tool_response)# 将五个指标的名称从回复中提取出来。
+            # relevant_metric_names = extract_metrics(tool_response)# 将五个指标的名称从回复中提取出来。
             
-            if not relevant_metric_names:
-                status, details = "Failed (Tool)", "Tool Agent did not return a valid metric list."
-                print(f"❌ {status} {details}")
-                continue 
-            print(f"[Tool Agent] Selected {len(relevant_metric_names)} metrics: {relevant_metric_names}")
+            # if not relevant_metric_names:
+            #     status, details = "Failed (Tool)", "Tool Agent did not return a valid metric list."
+            #     print(f"❌ {status} {details}")
+            #     continue 
+            # print(f"[Tool Agent] Selected {len(relevant_metric_names)} metrics: {relevant_metric_names}")
             
-            relevant_metrics_dict = {
-                metric: current_ncu_metrics.get(metric, 0.0) 
-                for metric in relevant_metric_names
-            }# 将选择的五个指标提取出来
+            # relevant_metrics_dict = {
+            #     metric: current_ncu_metrics.get(metric, 0.0) 
+            #     for metric in relevant_metric_names
+            # }# 将选择的五个指标提取出来
             
-            diverse_kernels_str = get_diverse_champions(optimization_history, best_kernel_code_cuda)# 从历史信息中找到和当前的最好版本best_kernel_code_cuda不是很相似的最好的两个代码和相关指标。
+            # diverse_kernels_str = get_diverse_champions(optimization_history, best_kernel_code_cuda)# 从历史信息中找到和当前的最好版本best_kernel_code_cuda不是很相似的最好的两个代码和相关指标。
             
-            # 3. Analysis Agent [!!! 已更新 !!!]
-            print("[Analysis Agent] Formulating plan...")
-            analysis_response = agents.call_llm(
-                "analysis", 
-                prompts.ANALYSIS_SYSTEM_PROMPT,
-                f"Planner's Bottleneck Analysis: {bottleneck_analysis}\n\n"
-                f"Optimization Goal: {opt_goal}\n\n"
-                f"Optimization History:\n{history_summary}\n\n"# DONE：和planner的同理，这个history_summary的信息是否足够有用？
-                f"Diverse Successful Kernel Examples:\n{diverse_kernels_str}\n\n"#DONE 2 这里的信息是不是应该好好组织一下，不然LLM分不清这些指标和优化目标是当前代码的还是当前代码的父节点的
-                f"Current C++/CUDA Source need to be optimized:\n{parent_kernel_code}\n\n" # parent_kernel_code就是当前最好的kernel,也就是正在改的版本，是当前这个！每次改的都是最好的那个
-                f"Current Hardware Metrics (Full Set): {metrics_summary}\n\n"# 是当前kernel的全部PTXAS信息和NCU信息
-                f"Tool-Selected Metrics from *Previous* Run (Values): {relevant_metrics_dict}" # 是当前kernel的选择出来的五个相关NCU指标。
-            )
-            print("-----------------------LXT:analysis_response----------------------")
-            print(analysis_response)#DONE:当前的输出部分没有think的过程
-            print("-----------------------LXT:analysis_response----------------------")
-            if not analysis_response or "DETAILED_PLAN:" not in analysis_response:
-                status, details = "Failed (Analysis)", "Analysis Agent did not return a valid plan."
-                print(f"❌ {status} {details}")
-                continue 
-            detailed_plan = analysis_response.split("DETAILED_PLAN:")[1].strip()
+            # # 3. Analysis Agent [!!! 已更新 !!!]
+            # print("[Analysis Agent] Formulating plan...")
+            # analysis_response = agents.call_llm(
+            #     "analysis", 
+            #     prompts.ANALYSIS_SYSTEM_PROMPT,
+            #     f"Planner's Bottleneck Analysis: {bottleneck_analysis}\n\n"
+            #     f"Optimization Goal: {opt_goal}\n\n"
+            #     f"Optimization History:\n{history_summary}\n\n"# DONE：和planner的同理，这个history_summary的信息是否足够有用？
+            #     f"Diverse Successful Kernel Examples:\n{diverse_kernels_str}\n\n"#DONE 2 这里的信息是不是应该好好组织一下，不然LLM分不清这些指标和优化目标是当前代码的还是当前代码的父节点的
+            #     f"Current C++/CUDA Source need to be optimized:\n{parent_kernel_code}\n\n" # parent_kernel_code就是当前最好的kernel,也就是正在改的版本，是当前这个！每次改的都是最好的那个
+            #     f"Current Hardware Metrics (Full Set): {metrics_summary}\n\n"# 是当前kernel的全部PTXAS信息和NCU信息
+            #     f"Tool-Selected Metrics from *Previous* Run (Values): {relevant_metrics_dict}" # 是当前kernel的选择出来的五个相关NCU指标。
+            # )
+            # print("-----------------------LXT:analysis_response----------------------")
+            # print(analysis_response)#DONE:当前的输出部分没有think的过程
+            # print("-----------------------LXT:analysis_response----------------------")
+            # if not analysis_response or "DETAILED_PLAN:" not in analysis_response:
+            #     status, details = "Failed (Analysis)", "Analysis Agent did not return a valid plan."
+            #     print(f"❌ {status} {details}")
+            #     continue 
+            # detailed_plan = analysis_response.split("DETAILED_PLAN:")[1].strip()
 
-            # 4. Coder Agent
-            print("[Coder Agent] Generating new kernel...")
-            coder_response = agents.call_llm(# DONE:coder agent没有思考过程
-                "coder", 
-                prompts.CODER_SYSTEM_PROMPT,
-                f"Original C++/CUDA Source:\n{parent_kernel_code}\n\nDetailed Plan:\n{detailed_plan}" 
-            )
-            print("-----------------------LXT:coder_response----------------------")
-            print(coder_response)
-            print("-----------------------LXT:coder_response----------------------")
+            # # 4. Coder Agent
+            # print("[Coder Agent] Generating new kernel...")
+            # coder_response = agents.call_llm(# DONE:coder agent没有思考过程
+            #     "coder", 
+            #     prompts.CODER_SYSTEM_PROMPT,
+            #     f"Original C++/CUDA Source:\n{parent_kernel_code}\n\nDetailed Plan:\n{detailed_plan}" 
+            # )
+            # print("-----------------------LXT:coder_response----------------------")
+            # print(coder_response)
+            # print("-----------------------LXT:coder_response----------------------")
             
-            new_kernel_code_full = final_extract(coder_response) 
+            # new_kernel_code_full = final_extract(coder_response) 
             #好
             # new_kernel_code_full = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\n# ---------------------------------------------------------------------------\n# CUDA source (kernels + C++/ATen host wrappers)\n# ---------------------------------------------------------------------------\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <cuda_fp16.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n/* ---------------------------------------------------------\n * Scalar fallback kernel : one-element per thread\n * ------------------------------------------------------- */\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel_scalar(const scalar_t* __restrict__ input,\n                                      scalar_t* __restrict__ output,\n                                      const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        output[idx] = sigmoid_func(input[idx]);\n    }\n}\n\n/* ---------------------------------------------------------\n * Vectorised kernel : VEC elements per thread\n * VEC = 4 for float (float4, 16-byte transaction)\n *     = 2 for double (double2, 16-byte transaction)\n * The last (numel % VEC) elements are processed by a\n * single thread (vec_idx == 0) inside the same kernel.\n * ------------------------------------------------------- */\ntemplate <typename scalar_t , int VEC>\n__global__ void sigmoid_kernel_vec(const scalar_t* __restrict__ input,\n                                   scalar_t*       __restrict__ output,\n                                   const int64_t   vec_elems,\n                                   const int64_t   tail_start,\n                                   const int64_t   tail_size) {\n    using VecT = typename std::conditional< (sizeof(scalar_t)==4),\n                                            float4,              // 4 x fp32 = 16 B\n                                            double2               // 2 x fp64 = 16 B\n                                          >::type;\n\n    const int64_t vec_idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    /* ---------------- Aligned, vectorised path ---------------- */\n    if (vec_idx < vec_elems) {\n        VecT v = reinterpret_cast<const VecT*>(input)[vec_idx];\n\n        scalar_t* v_elem = reinterpret_cast<scalar_t*>(&v);\n        #pragma unroll\n        for (int i = 0; i < VEC; ++i) {\n            v_elem[i] = sigmoid_func(v_elem[i]);\n        }\n\n        reinterpret_cast<VecT*>(output)[vec_idx] = v;\n    }\n\n    /* ---------------- Tail handling by one thread ------------- */\n    if (tail_size && vec_idx == 0) {\n        for (int64_t j = 0; j < tail_size; ++j) {\n            const int64_t idx = tail_start + j;\n            output[idx] = sigmoid_func(input[idx]);\n        }\n    }\n}\n\n/* ---------------------------------------------------------\n * Host launcher\n * ------------------------------------------------------- */\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n\n    auto output = torch::empty_like(input);\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    // Fast path : fp32 / fp64 with vectorised kernel\n    if (input.scalar_type() == at::kFloat || input.scalar_type() == at::kDouble) {\n\n        if (input.scalar_type() == at::kFloat) {\n            using scalar_t = float;\n            constexpr int  VEC = 4;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                // Fallback to scalar kernel if vector part is empty\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        } else { // double\n            using scalar_t = double;\n            constexpr int  VEC = 2;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        }\n\n    } else {\n        /* Generic scalar kernel for remaining dtypes (half, bfloat16, etc.) */\n        const int64_t blocks = (numel + threads - 1) / threads;\n        AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(),\n                                            "sigmoid_forward_cuda_scalar", ([&] {\n            sigmoid_kernel_scalar<scalar_t><<<blocks, threads, 0, stream>>>(\n                input.data_ptr<scalar_t>(),\n                output.data_ptr<scalar_t>(),\n                numel);\n        }));\n    }\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n\n    return output;\n}\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# C++ function prototypes\n# ---------------------------------------------------------------------------\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# Build & load extension\n# ---------------------------------------------------------------------------\nsigmoid_module = load_inline(\n    name         = \'sigmoid_cuda_opt\',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = [\'sigmoid_forward\'],\n    with_cuda    = True,\n    verbose      = True,\n    extra_cuda_cflags=[\'-O3\', \'--ptxas-options=-v\']\n)\n\n# ---------------------------------------------------------------------------\n# PyTorch Module wrapper\n# ---------------------------------------------------------------------------\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
+            new_kernel_code_full = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\n# ---------------------------------------------------------------------------\n# CUDA source (kernels + C++/ATen host wrappers)\n# ---------------------------------------------------------------------------\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <cuda_fp16.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(x));\n}\n\n/* ---------------------------------------------------------\n * Scalar fallback kernel : one-element per thread\n * ------------------------------------------------------- */\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel_scalar(const scalar_t* __restrict__ input,\n                                      scalar_t* __restrict__ output,\n                                      const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        output[idx] = sigmoid_func(input[idx]);\n    }\n}\n\n/* ---------------------------------------------------------\n * Vectorised kernel : VEC elements per thread\n * VEC = 4 for float (float4, 16-byte transaction)\n *     = 2 for double (double2, 16-byte transaction)\n * The last (numel % VEC) elements are processed by a\n * single thread (vec_idx == 0) inside the same kernel.\n * ------------------------------------------------------- */\ntemplate <typename scalar_t , int VEC>\n__global__ void sigmoid_kernel_vec(const scalar_t* __restrict__ input,\n                                   scalar_t*       __restrict__ output,\n                                   const int64_t   vec_elems,\n                                   const int64_t   tail_start,\n                                   const int64_t   tail_size) {\n    using VecT = typename std::conditional< (sizeof(scalar_t)==4),\n                                            float4,              // 4 x fp32 = 16 B\n                                            double2               // 2 x fp64 = 16 B\n                                          >::type;\n\n    const int64_t vec_idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    /* ---------------- Aligned, vectorised path ---------------- */\n    if (vec_idx < vec_elems) {\n        VecT v = reinterpret_cast<const VecT*>(input)[vec_idx];\n\n        scalar_t* v_elem = reinterpret_cast<scalar_t*>(&v);\n        #pragma unroll\n        for (int i = 0; i < VEC; ++i) {\n            v_elem[i] = sigmoid_func(v_elem[i]);\n        }\n\n        reinterpret_cast<VecT*>(output)[vec_idx] = v;\n    }\n\n    /* ---------------- Tail handling by one thread ------------- */\n    if (tail_size && vec_idx == 0) {\n        for (int64_t j = 0; j < tail_size; ++j) {\n            const int64_t idx = tail_start + j;\n            output[idx] = sigmoid_func(input[idx]);\n        }\n    }\n}\n\n/* ---------------------------------------------------------\n * Host launcher\n * ------------------------------------------------------- */\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n\n    auto output = torch::empty_like(input);\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    // Fast path : fp32 / fp64 with vectorised kernel\n    if (input.scalar_type() == at::kFloat || input.scalar_type() == at::kDouble) {\n\n        if (input.scalar_type() == at::kFloat) {\n            using scalar_t = float;\n            constexpr int  VEC = 4;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                // Fallback to scalar kernel if vector part is empty\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        } else { // double\n            using scalar_t = double;\n            constexpr int  VEC = 2;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        }\n\n    } else {\n        /* Generic scalar kernel for remaining dtypes (half, bfloat16, etc.) */\n        const int64_t blocks = (numel + threads - 1) / threads;\n        AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(),\n                                            "sigmoid_forward_cuda_scalar", ([&] {\n            sigmoid_kernel_scalar<scalar_t><<<blocks, threads, 0, stream>>>(\n                input.data_ptr<scalar_t>(),\n                output.data_ptr<scalar_t>(),\n                numel);\n        }));\n    }\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n\n    return output;\n}\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# C++ function prototypes\n# ---------------------------------------------------------------------------\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# Build & load extension\n# ---------------------------------------------------------------------------\nsigmoid_module = load_inline(\n    name         = \'sigmoid_cuda_opt\',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = [\'sigmoid_forward\'],\n    with_cuda    = True,\n    verbose      = True,\n    extra_cuda_cflags=[\'-O3\', \'--ptxas-options=-v\']\n)\n\n# ---------------------------------------------------------------------------\n# PyTorch Module wrapper\n# ---------------------------------------------------------------------------\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
+
             #坏
             # new_kernel_code_full = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n// Kernel: element-wise Sigmoid\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel(const scalar_t* __restrict__ input,\n                               scalar_t* __restrict__ output,\n                               const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        scalar_t val = input[idx];\n        output[idx] = sigmoid_func(val);\n    }\n}\n\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n    auto output = torch::empty_like(input);\n\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    const int64_t blocks = (numel + threads - 1) / threads;\n\n    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "sigmoid_forward_cuda", ([&] {\n        sigmoid_kernel<scalar_t><<<blocks, threads, 0,\n                                   at::cuda::getCurrentCUDAStream()>>>(\n            input.data_ptr<scalar_t>(),\n            output.data_ptr<scalar_t>(),\n            numel);\n    }));\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n    return output;\n}\n\'\'\'\n\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\nsigmoid_module = load_inline(\n    name=\'sigmoid_cuda\',\n    cpp_sources=cpp_src,\n    cuda_sources=source,\n    functions=[\'sigmoid_forward\'],\n    with_cuda=True,\n verbose=True,\n    extra_cuda_cflags=[\'-O2\',\'--ptxas-options=-v\']\n)\n\n\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
 
@@ -873,24 +875,24 @@ def run_optimization_on_problem(
                             current_code_is_correct = True
                             break
 
-                if not current_code_is_correct:
-                    module, stdout_log, err_msg = cuda_utils.load_module(
-                        new_kernel_code_full,
-                        current_module_name,
-                        init_inputs, 
-                    )
-                    # print("Compilation successful.")
-                    
-                    new_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)# DONE3 针对21用例这里提取的PTXAS信息不太对劲
-                    if not module:
-                        status, details = "Failed (Compilation)", f"New kernel is COMPILATION INCORRECT.{err_msg}"
-                        print(f"❌ {status}")
-                        continue 
-                    is_correct, err_str = cuda_utils.check_correctness(inputs, ref_outputs, module)
-                    if not is_correct:
-                        status, details = "Failed (Correctness)", f"New kernel is OUTPUT RESULT INCORRECT.{err_str}"
-                        print(f"❌ {status}")
-                        continue 
+                # if not current_code_is_correct:
+                module, stdout_log, err_msg = cuda_utils.load_module(
+                    new_kernel_code_full,
+                    current_module_name,
+                    init_inputs, 
+                )
+                # print("Compilation successful.")
+                
+                new_ptxas_metrics = cuda_utils.parse_ptxas_info(stdout_log)# DONE3 针对21用例这里提取的PTXAS信息不太对劲
+                if not module:
+                    status, details = "Failed (Compilation)", f"New kernel is COMPILATION INCORRECT.{err_msg}"
+                    print(f"❌ {status}")
+                    continue 
+                is_correct, err_str = cuda_utils.check_correctness(inputs, ref_outputs, module)
+                if not is_correct:
+                    status, details = "Failed (Correctness)", f"New kernel is OUTPUT RESULT INCORRECT.{err_str}"
+                    print(f"❌ {status}")
+                    continue 
 
                 
 
