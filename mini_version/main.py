@@ -673,11 +673,15 @@ def run_optimization_on_problem(
         except Exception as e:
             print(f"❌ Baseline kernel failed compilation or runtime. Exiting. \n{e}")
             return {"error": f"Baseline failed: {e}"}  
+        
+        finally:
+            if module is not None:
+                del module
     
     if not current_ncu_metrics: 
         current_ncu_metrics = best_ncu_metrics if best_ncu_metrics else {}
-    
-    del module
+    # if module is not None:
+    #     del module
     torch.cuda.empty_cache()
 
 

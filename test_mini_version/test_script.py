@@ -1126,103 +1126,119 @@ def main(args):
             except Exception as e:
                 print(f"Warning: Failed to save PyTorch baseline stats: {e}")
             # --- 3. 生成并验证初始 C++ 和 CUDA 内核 (带修正循环) ---
-            initial_cuda_source = None
-            # initial_cuda_source = None
-            generation_history = []
-            is_correct_and_compiled = False
-            
-            print(f"Attempt 1/{args.max_correction_attempts + 1}: Generating initial C++/CUDA kernel...")
-            
-            # 3.1. 初始生成 (Attempt 0)
-            # cuda_code = generate_initial_cuda_kernel(
-            #     full_pytorch_source_code, 
-            #     cpp_wrapper_gpu_inputs, # [!!! 已修复 !!!] 
-            #     ref_outputs, 
-            # )
+            initial_cuda_code = None
 
-            #坏
-            cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n// Kernel: element-wise Sigmoid\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel(const scalar_t* __restrict__ input,\n                               scalar_t* __restrict__ output,\n                               const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        scalar_t val = input[idx];\n        output[idx] = sigmoid_func(val);\n    }\n}\n\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n    auto output = torch::empty_like(input);\n\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    const int64_t blocks = (numel + threads - 1) / threads;\n\n    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "sigmoid_forward_cuda", ([&] {\n        sigmoid_kernel<scalar_t><<<blocks, threads, 0,\n                                   at::cuda::getCurrentCUDAStream()>>>(\n            input.data_ptr<scalar_t>(),\n            output.data_ptr<scalar_t>(),\n            numel);\n    }));\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n    return output;\n}\n\'\'\'\n\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\nsigmoid_module = load_inline(\n    name=\'sigmoid_cuda\',\n    cpp_sources=cpp_src,\n    cuda_sources=source,\n    functions=[\'sigmoid_forward\'],\n    with_cuda=True,\n verbose=True,\n    extra_cuda_cflags=[\'-O2\',\'--ptxas-options=-v\']\n)\n\n\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
-            #好
-            # cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\n# ---------------------------------------------------------------------------\n# CUDA source (kernels + C++/ATen host wrappers)\n# ---------------------------------------------------------------------------\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <cuda_fp16.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n/* ---------------------------------------------------------\n * Scalar fallback kernel : one-element per thread\n * ------------------------------------------------------- */\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel_scalar(const scalar_t* __restrict__ input,\n                                      scalar_t* __restrict__ output,\n                                      const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        output[idx] = sigmoid_func(input[idx]);\n    }\n}\n\n/* ---------------------------------------------------------\n * Vectorised kernel : VEC elements per thread\n * VEC = 4 for float (float4, 16-byte transaction)\n *     = 2 for double (double2, 16-byte transaction)\n * The last (numel % VEC) elements are processed by a\n * single thread (vec_idx == 0) inside the same kernel.\n * ------------------------------------------------------- */\ntemplate <typename scalar_t , int VEC>\n__global__ void sigmoid_kernel_vec(const scalar_t* __restrict__ input,\n                                   scalar_t*       __restrict__ output,\n                                   const int64_t   vec_elems,\n                                   const int64_t   tail_start,\n                                   const int64_t   tail_size) {\n    using VecT = typename std::conditional< (sizeof(scalar_t)==4),\n                                            float4,              // 4 x fp32 = 16 B\n                                            double2               // 2 x fp64 = 16 B\n                                          >::type;\n\n    const int64_t vec_idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    /* ---------------- Aligned, vectorised path ---------------- */\n    if (vec_idx < vec_elems) {\n        VecT v = reinterpret_cast<const VecT*>(input)[vec_idx];\n\n        scalar_t* v_elem = reinterpret_cast<scalar_t*>(&v);\n        #pragma unroll\n        for (int i = 0; i < VEC; ++i) {\n            v_elem[i] = sigmoid_func(v_elem[i]);\n        }\n\n        reinterpret_cast<VecT*>(output)[vec_idx] = v;\n    }\n\n    /* ---------------- Tail handling by one thread ------------- */\n    if (tail_size && vec_idx == 0) {\n        for (int64_t j = 0; j < tail_size; ++j) {\n            const int64_t idx = tail_start + j;\n            output[idx] = sigmoid_func(input[idx]);\n        }\n    }\n}\n\n/* ---------------------------------------------------------\n * Host launcher\n * ------------------------------------------------------- */\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n\n    auto output = torch::empty_like(input);\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    // Fast path : fp32 / fp64 with vectorised kernel\n    if (input.scalar_type() == at::kFloat || input.scalar_type() == at::kDouble) {\n\n        if (input.scalar_type() == at::kFloat) {\n            using scalar_t = float;\n            constexpr int  VEC = 4;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                // Fallback to scalar kernel if vector part is empty\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        } else { // double\n            using scalar_t = double;\n            constexpr int  VEC = 2;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        }\n\n    } else {\n        /* Generic scalar kernel for remaining dtypes (half, bfloat16, etc.) */\n        const int64_t blocks = (numel + threads - 1) / threads;\n        AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(),\n                                            "sigmoid_forward_cuda_scalar", ([&] {\n            sigmoid_kernel_scalar<scalar_t><<<blocks, threads, 0, stream>>>(\n                input.data_ptr<scalar_t>(),\n                output.data_ptr<scalar_t>(),\n                numel);\n        }));\n    }\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n\n    return output;\n}\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# C++ function prototypes\n# ---------------------------------------------------------------------------\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# Build & load extension\n# ---------------------------------------------------------------------------\nsigmoid_module = load_inline(\n    name         = \'sigmoid_cuda_opt\',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = [\'sigmoid_forward\'],\n    with_cuda    = True,\n    verbose      = True,\n    extra_cuda_cflags=[\'-O3\', \'--ptxas-options=-v\']\n)\n\n# ---------------------------------------------------------------------------\n# PyTorch Module wrapper\n# ---------------------------------------------------------------------------\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
-
-            generation_history.append({
-                "attempt": 0,
-                "type": "generation",
-                "response_cuda_code": cuda_code
-                # "response": response_text,
-                # "cpp_code_extracted": bool(cpp_code),
-                # "cuda_code_extracted": bool(cuda_code),
-                # "error": ""
-            })
-
-            if not cuda_code:
-                print("The initialization phase did not produce the correct cuda_code.")
-            else:
-                # initial_cpp_source = cpp_code
-                # initial_cuda_source = cuda_code
-                initial_cuda_code = cuda_code
-
-                # 3.2. 验证与修正循环 (最多10次，由 args.max_correction_attempts 控制)
-                for attempt in range(args.max_correction_attempts):
-                    if not initial_cuda_code:
-                        print(f"Cannot correct code (missing). Aborting for {problem_name}.")
-                        break
-
-                    print(f"--- Verification Attempt {attempt+1}/{args.max_correction_attempts} ---")
-                    verResult, errMessage = validate_extracted_code(initial_cuda_code, init_inputs, gpu_inputs, ref_outputs)
-
-
-
-                    # 步骤 3: 修正 (如果发生任何错误)
-                    if not verResult:
-                        print(f"Error captured. Attempting LLM correction (Attempt {attempt+1})...")
-                        
-                        # 打印一部分错误信息用于调试
-                        err_str = str(errMessage)
-                        print(f"--- Error Snippet ---\n{err_str[:500]}...\n---------------------")
-
-                        # 截断过长
-                        if len(err_str) > 4000:
-                            err_str = err_str[:2000] + "\n...[TRUNCATED]...\n" + err_str[-2000:]
-                             
-                        cuda_code = correct_cuda_kernel(
-                            full_pytorch_source_code,
-                            initial_cuda_code,
-                            errMessage
-                        )
-                        
-                        generation_history.append({
-                            "attempt": attempt + 1,
-                            "type": "correction",
-                            "error_sent": err_str,
-                            "response_cuda_code": cuda_code,
-                        })
-                        
-                        if cuda_code:
-                            initial_cuda_code = cuda_code
-                            print("Code corrected by LLM. Retrying verification...")
-                        else:
-                            print("LLM correction failed (did not return valid code). Aborting.")
-                            break
+            if os.path.exists(best_kernel_path) and args.force_rerun:
+                try:
+                    print(f"Found existing best kernel file: {best_kernel_path}")
+                    with open(best_kernel_path, "r", encoding='utf-8') as f:
+                        initial_cuda_code = f.read()
+                    
+                    if initial_cuda_code and len(initial_cuda_code.strip()) > 0:
+                        print("✅ Successfully loaded initial CUDA code from best_kernel.cu. Skipping Step 3 (Generation).")
                     else:
-                        is_correct_and_compiled = True
-                        break
+                        print("⚠️ best_kernel.cu is empty. Trying fallback...")
+                        initial_cuda_code = None
+                except Exception as e:
+                    print(f"⚠️ Failed to load best_kernel.cu: {e}")
+                    initial_cuda_code = None
+            if not initial_cuda_code:
+            # initial_cuda_source = None
+                generation_history = []
+                is_correct_and_compiled = False
+                
+                print(f"Attempt 1/{args.max_correction_attempts + 1}: Generating initial C++/CUDA kernel...")
+                
+                # 3.1. 初始生成 (Attempt 0)
+                # cuda_code = generate_initial_cuda_kernel(
+                #     full_pytorch_source_code, 
+                #     cpp_wrapper_gpu_inputs, # [!!! 已修复 !!!] 
+                #     ref_outputs, 
+                # )
 
-            # 保存初始内核的生成/修正历史 (用于调试)
-            init_gen_path = os.path.join(problem_results_dir, f"{problem_name}_initial_generation.json")
-            with open(init_gen_path, "w", encoding='utf-8') as f:
-                json.dump(generation_history, f, indent=2, ensure_ascii=False)
+                #坏
+                cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n// Kernel: element-wise Sigmoid\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel(const scalar_t* __restrict__ input,\n                               scalar_t* __restrict__ output,\n                               const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        scalar_t val = input[idx];\n        output[idx] = sigmoid_func(val);\n    }\n}\n\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n    auto output = torch::empty_like(input);\n\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    const int64_t blocks = (numel + threads - 1) / threads;\n\n    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "sigmoid_forward_cuda", ([&] {\n        sigmoid_kernel<scalar_t><<<blocks, threads, 0,\n                                   at::cuda::getCurrentCUDAStream()>>>(\n            input.data_ptr<scalar_t>(),\n            output.data_ptr<scalar_t>(),\n            numel);\n    }));\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n    return output;\n}\n\'\'\'\n\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\nsigmoid_module = load_inline(\n    name=\'sigmoid_cuda\',\n    cpp_sources=cpp_src,\n    cuda_sources=source,\n    functions=[\'sigmoid_forward\'],\n    with_cuda=True,\n verbose=True,\n    extra_cuda_cflags=[\'-O2\',\'--ptxas-options=-v\']\n)\n\n\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
+                #好
+                # cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\n# ---------------------------------------------------------------------------\n# CUDA source (kernels + C++/ATen host wrappers)\n# ---------------------------------------------------------------------------\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <cuda_fp16.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n/* ---------------------------------------------------------\n * Scalar fallback kernel : one-element per thread\n * ------------------------------------------------------- */\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel_scalar(const scalar_t* __restrict__ input,\n                                      scalar_t* __restrict__ output,\n                                      const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        output[idx] = sigmoid_func(input[idx]);\n    }\n}\n\n/* ---------------------------------------------------------\n * Vectorised kernel : VEC elements per thread\n * VEC = 4 for float (float4, 16-byte transaction)\n *     = 2 for double (double2, 16-byte transaction)\n * The last (numel % VEC) elements are processed by a\n * single thread (vec_idx == 0) inside the same kernel.\n * ------------------------------------------------------- */\ntemplate <typename scalar_t , int VEC>\n__global__ void sigmoid_kernel_vec(const scalar_t* __restrict__ input,\n                                   scalar_t*       __restrict__ output,\n                                   const int64_t   vec_elems,\n                                   const int64_t   tail_start,\n                                   const int64_t   tail_size) {\n    using VecT = typename std::conditional< (sizeof(scalar_t)==4),\n                                            float4,              // 4 x fp32 = 16 B\n                                            double2               // 2 x fp64 = 16 B\n                                          >::type;\n\n    const int64_t vec_idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    /* ---------------- Aligned, vectorised path ---------------- */\n    if (vec_idx < vec_elems) {\n        VecT v = reinterpret_cast<const VecT*>(input)[vec_idx];\n\n        scalar_t* v_elem = reinterpret_cast<scalar_t*>(&v);\n        #pragma unroll\n        for (int i = 0; i < VEC; ++i) {\n            v_elem[i] = sigmoid_func(v_elem[i]);\n        }\n\n        reinterpret_cast<VecT*>(output)[vec_idx] = v;\n    }\n\n    /* ---------------- Tail handling by one thread ------------- */\n    if (tail_size && vec_idx == 0) {\n        for (int64_t j = 0; j < tail_size; ++j) {\n            const int64_t idx = tail_start + j;\n            output[idx] = sigmoid_func(input[idx]);\n        }\n    }\n}\n\n/* ---------------------------------------------------------\n * Host launcher\n * ------------------------------------------------------- */\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n\n    auto output = torch::empty_like(input);\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    // Fast path : fp32 / fp64 with vectorised kernel\n    if (input.scalar_type() == at::kFloat || input.scalar_type() == at::kDouble) {\n\n        if (input.scalar_type() == at::kFloat) {\n            using scalar_t = float;\n            constexpr int  VEC = 4;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                // Fallback to scalar kernel if vector part is empty\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        } else { // double\n            using scalar_t = double;\n            constexpr int  VEC = 2;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        }\n\n    } else {\n        /* Generic scalar kernel for remaining dtypes (half, bfloat16, etc.) */\n        const int64_t blocks = (numel + threads - 1) / threads;\n        AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(),\n                                            "sigmoid_forward_cuda_scalar", ([&] {\n            sigmoid_kernel_scalar<scalar_t><<<blocks, threads, 0, stream>>>(\n                input.data_ptr<scalar_t>(),\n                output.data_ptr<scalar_t>(),\n                numel);\n        }));\n    }\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n\n    return output;\n}\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# C++ function prototypes\n# ---------------------------------------------------------------------------\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# Build & load extension\n# ---------------------------------------------------------------------------\nsigmoid_module = load_inline(\n    name         = \'sigmoid_cuda_opt\',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = [\'sigmoid_forward\'],\n    with_cuda    = True,\n    verbose      = True,\n    extra_cuda_cflags=[\'-O3\', \'--ptxas-options=-v\']\n)\n\n# ---------------------------------------------------------------------------\n# PyTorch Module wrapper\n# ---------------------------------------------------------------------------\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
 
-            # 3.3. 检查最终结果
-            if not is_correct_and_compiled:
-                print(f"FAILED to generate a correct initial C++/CUDA source after {args.max_correction_attempts + 1} attempts. Skipping optimization.")
-                summary_results[problem_name] = {
-                    "baseline_ms": baseline_time_ms,
-                    "best_cuda_ms": float('inf'),
-                    "speedup": 0.0,
-                    "status": "Failed initial generation/correction"
-                }
-                continue # [!!!] 跳到 finally 块，然后到下一个 problem
+                generation_history.append({
+                    "attempt": 0,
+                    "type": "generation",
+                    "response_cuda_code": cuda_code
+                    # "response": response_text,
+                    # "cpp_code_extracted": bool(cpp_code),
+                    # "cuda_code_extracted": bool(cuda_code),
+                    # "error": ""
+                })
+
+                if not cuda_code:
+                    print("The initialization phase did not produce the correct cuda_code.")
+                else:
+                    # initial_cpp_source = cpp_code
+                    # initial_cuda_source = cuda_code
+                    initial_cuda_code = cuda_code
+
+                    # 3.2. 验证与修正循环 (最多10次，由 args.max_correction_attempts 控制)
+                    for attempt in range(args.max_correction_attempts):
+                        if not initial_cuda_code:
+                            print(f"Cannot correct code (missing). Aborting for {problem_name}.")
+                            break
+
+                        print(f"--- Verification Attempt {attempt+1}/{args.max_correction_attempts} ---")
+                        verResult, errMessage = validate_extracted_code(initial_cuda_code, init_inputs, gpu_inputs, ref_outputs)
+
+
+
+                        # 步骤 3: 修正 (如果发生任何错误)
+                        if not verResult:
+                            print(f"Error captured. Attempting LLM correction (Attempt {attempt+1})...")
+                            
+                            # 打印一部分错误信息用于调试
+                            err_str = str(errMessage)
+                            print(f"--- Error Snippet ---\n{err_str[:500]}...\n---------------------")
+
+                            # 截断过长
+                            if len(err_str) > 4000:
+                                err_str = err_str[:2000] + "\n...[TRUNCATED]...\n" + err_str[-2000:]
+                                
+                            cuda_code = correct_cuda_kernel(
+                                full_pytorch_source_code,
+                                initial_cuda_code,
+                                errMessage
+                            )
+                            
+                            generation_history.append({
+                                "attempt": attempt + 1,
+                                "type": "correction",
+                                "error_sent": err_str,
+                                "response_cuda_code": cuda_code,
+                            })
+                            
+                            if cuda_code:
+                                initial_cuda_code = cuda_code
+                                print("Code corrected by LLM. Retrying verification...")
+                            else:
+                                print("LLM correction failed (did not return valid code). Aborting.")
+                                break
+                        else:
+                            is_correct_and_compiled = True
+                            break
+
+                # 保存初始内核的生成/修正历史 (用于调试)
+                init_gen_path = os.path.join(problem_results_dir, f"{problem_name}_initial_generation.json")
+                with open(init_gen_path, "w", encoding='utf-8') as f:
+                    json.dump(generation_history, f, indent=2, ensure_ascii=False)
+
+                # 3.3. 检查最终结果
+                if not is_correct_and_compiled:
+                    print(f"FAILED to generate a correct initial C++/CUDA source after {args.max_correction_attempts + 1} attempts. Skipping optimization.")
+                    summary_results[problem_name] = {
+                        "baseline_ms": baseline_time_ms,
+                        "best_cuda_ms": float('inf'),
+                        "speedup": 0.0,
+                        "status": "Failed initial generation/correction"
+                    }
+                    continue # [!!!] 跳到 finally 块，然后到下一个 problem
 
             # --- 4. 调用 mini_version 的优化循环 ---
             

@@ -270,9 +270,9 @@
     "status": "Success"
   },
   "21_Sigmoid": {
-    "baseline_ms": 7.432478637695312,
-    "best_cuda_ms": 7.497318267822266,
-    "speedup": 0.9913516236325143,
+    "baseline_ms": 7.432969970703125,
+    "best_cuda_ms": 7.618867492675781,
+    "speedup": 0.9756003733952108,
     "status": "Success"
   }
 }

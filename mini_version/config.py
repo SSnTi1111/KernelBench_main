@@ -6,7 +6,7 @@ os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
 # --- General Settings ---
 # MATRIX_N = 8192 # <--- [!!! 已移除 !!!] 不再需要全局 N
-ITERATION_ROUNDS = 5  # 可外部设置的迭代轮数
+ITERATION_ROUNDS = 15  # 可外部设置的迭代轮数
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- [!!! 已更新 !!!] ---
