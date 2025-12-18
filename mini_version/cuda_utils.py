@@ -327,6 +327,9 @@ def load_module(cuda_code, module_name, init_inputs):
                     model_instance = model_class(init_inputs)
             else:
                 model_instance = model_class()
+                
+            if torch.cuda.is_available():
+                    model_instance = model_instance.cuda()
             
             # [!!! 关键修复 1 !!!] 绑定 __file__ 属性，供 main.py 中的 NCU 使用
             model_instance.__file__ = file_path

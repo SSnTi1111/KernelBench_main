@@ -25,7 +25,7 @@ AGENT_MODELS = {
     # "initial_generator": "o3", # 建议使用最强的模型
     # "initial_corrector": "o3",
     "initial_generator": "o3", # 建议使用最强的模型
-    "initial_corrector": "gpt-5-mini",
+    "initial_corrector": "o3",
     # "initial_corrector": "DeepSeek-V3.1-Fast", # [!!! 新增 !!!] (建议使用您最强的模型)
     # "initial_corrector": "gpt-5", # [!!! 新增 !!!] (建议使用您最强的模型)
 
