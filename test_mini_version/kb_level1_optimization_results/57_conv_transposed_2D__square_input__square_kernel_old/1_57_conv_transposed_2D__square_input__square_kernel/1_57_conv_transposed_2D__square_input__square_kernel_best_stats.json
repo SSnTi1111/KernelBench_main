@@ -1,0 +1,7 @@
+{
+  "problem_name": "kb_1_57_conv_transposed_2D__square_input__square_kernel",
+  "baseline_ms": 13.873643798828125,
+  "best_cuda_ms": 2287.1861328125,
+  "speedup": 0.006065813184066495,
+  "last_updated_round": 0
+}

@@ -29,6 +29,80 @@ from collections import defaultdict
 _gemm_module = None
 # data_type_info = ""
 # vvv --- [!!! 已更新 !!!] NCU 模板现在是通用的 --- vvv
+# NCU_TARGET_SCRIPT_TEMPLATE = """
+# import torch
+# import importlib.util
+# import os
+# import sys
+# import traceback
+
+# # 1. 获取命令行参数 (只期望 2 个参数: 路径和模块名)
+# MODULE_PATH = sys.argv[1]
+# MODULE_NAME = sys.argv[2]
+# # WRAPPER_FUNCTION_NAME = sys.argv[3] # <--- [已移除] 不再需要
+
+# try:
+#     # 2. 加载模块
+#     spec = importlib.util.spec_from_file_location(MODULE_NAME, MODULE_PATH)
+#     if spec is None:
+#         print(f"Error: 无法从 {MODULE_PATH} 加载 spec", file=sys.stderr)
+#         sys.exit(1)
+        
+#     module = importlib.util.module_from_spec(spec)
+#     spec.loader.exec_module(module)
+
+#     # 3. 准备设备和数据
+#     torch.cuda.set_device(0)
+#     device = torch.device("cuda")
+    
+#     try:
+#         # 从保存的文件中加载输入
+#         inputs = torch.load("_ncu_inputs.pt")
+#         # 确保输入移动到 GPU
+#         gpu_inputs = [t.to(device) if isinstance(t, torch.Tensor) else t for t in inputs]
+#     except Exception as e:
+#         print(f"Failed to load _ncu_inputs.pt: {e}", file=sys.stderr)
+#         traceback.print_exc()
+#         sys.exit(1)
+
+#     # 4. 实例化模型 (ModelNew)
+#     # 注意：这里假设 ModelNew 的 __init__ 不需要参数，或者参数已硬编码。
+#     # 对于 Level 1 的问题，生成的代码通常遵循这一模式。
+#     if not hasattr(module, 'ModelNew'):
+#         print(f"Error: 模块 {MODULE_NAME} 中未找到 'ModelNew' 类", file=sys.stderr)
+#         sys.exit(1)
+        
+#     try:
+#         model = module.ModelNew()
+#         model.to(device)
+#         model.eval() # 切换到评估模式 (影响某些 layers 如 Dropout/BatchNorm)
+#     except Exception as e:
+#         print(f"Error: 实例化 ModelNew 失败: {e}", file=sys.stderr)
+#         traceback.print_exc()
+#         sys.exit(1)
+
+#     torch.cuda.synchronize(device)
+    
+#     # --- 5. 运行目标 (NCU 分析区域) ---
+#     # 仅运行一次，不进行预热 (NCU 不需要预热，且 launch-count=1)
+    
+#     try:
+#         model(*gpu_inputs)
+#     except Exception as e:
+#         print(f"Error: 模型执行失败: {e}", file=sys.stderr)
+#         traceback.print_exc()
+#         sys.exit(1)
+        
+#     # --- 结束分析 ---
+    
+#     torch.cuda.synchronize(device)
+
+# except Exception as e:
+#     print(f"NCU target script failed: {e}", file=sys.stderr)
+#     traceback.print_exc()
+#     sys.exit(1)
+# """
+
 NCU_TARGET_SCRIPT_TEMPLATE = """
 import torch
 import importlib.util
@@ -36,16 +110,25 @@ import os
 import sys
 import traceback
 
-# 1. 获取命令行参数 (只期望 2 个参数: 路径和模块名)
+# 1. 获取命令行参数
 MODULE_PATH = sys.argv[1]
 MODULE_NAME = sys.argv[2]
-# WRAPPER_FUNCTION_NAME = sys.argv[3] # <--- [已移除] 不再需要
+
+def move_to_cuda(item):
+    if isinstance(item, torch.Tensor):
+        return item.cuda()
+    elif isinstance(item, (list, tuple)):
+        # 递归处理列表或元组，并保持原有类型
+        return type(item)(move_to_cuda(x) for x in item)
+    elif isinstance(item, dict):
+        return {k: move_to_cuda(v) for k, v in item.items()}
+    else:
+        return item
 
 try:
     # 2. 加载模块
     spec = importlib.util.spec_from_file_location(MODULE_NAME, MODULE_PATH)
     if spec is None:
-        print(f"Error: 无法从 {MODULE_PATH} 加载 spec", file=sys.stderr)
         sys.exit(1)
         
     module = importlib.util.module_from_spec(spec)
@@ -56,53 +139,52 @@ try:
     device = torch.device("cuda")
     
     try:
-        # 从保存的文件中加载输入
+        # 加载推理输入
         inputs = torch.load("_ncu_inputs.pt")
-        # 确保输入移动到 GPU
-        gpu_inputs = [t.to(device) if isinstance(t, torch.Tensor) else t for t in inputs]
+        # [核心修改] 加载模型初始化参数
+        init_inputs = []
+        if os.path.exists("_ncu_init_inputs.pt"):
+            init_inputs = torch.load("_ncu_init_inputs.pt")
+            
+        gpu_inputs = [move_to_cuda(t) for t in inputs]
     except Exception as e:
-        print(f"Failed to load _ncu_inputs.pt: {e}", file=sys.stderr)
-        traceback.print_exc()
+        print(f"Failed to load data: {e}", file=sys.stderr)
         sys.exit(1)
 
     # 4. 实例化模型 (ModelNew)
-    # 注意：这里假设 ModelNew 的 __init__ 不需要参数，或者参数已硬编码。
-    # 对于 Level 1 的问题，生成的代码通常遵循这一模式。
     if not hasattr(module, 'ModelNew'):
-        print(f"Error: 模块 {MODULE_NAME} 中未找到 'ModelNew' 类", file=sys.stderr)
         sys.exit(1)
         
     try:
-        model = module.ModelNew()
+        # [核心修改] 使用 init_inputs 实例化模型，解决参数缺失问题
+        if isinstance(init_inputs, (list, tuple)):
+            model = module.ModelNew(*init_inputs)
+        elif isinstance(init_inputs, dict):
+            model = module.ModelNew(**init_inputs)
+        else:
+            model = module.ModelNew(init_inputs)
+            
         model.to(device)
-        model.eval() # 切换到评估模式 (影响某些 layers 如 Dropout/BatchNorm)
+        model.eval() 
     except Exception as e:
         print(f"Error: 实例化 ModelNew 失败: {e}", file=sys.stderr)
-        traceback.print_exc()
         sys.exit(1)
 
     torch.cuda.synchronize(device)
     
-    # --- 5. 运行目标 (NCU 分析区域) ---
-    # 仅运行一次，不进行预热 (NCU 不需要预热，且 launch-count=1)
-    
+    # 5. 运行目标 (NCU 分析区域)
     try:
         model(*gpu_inputs)
     except Exception as e:
         print(f"Error: 模型执行失败: {e}", file=sys.stderr)
-        traceback.print_exc()
         sys.exit(1)
         
-    # --- 结束分析 ---
-    
     torch.cuda.synchronize(device)
 
 except Exception as e:
-    print(f"NCU target script failed: {e}", file=sys.stderr)
     traceback.print_exc()
     sys.exit(1)
 """
-
 
 def _named_tensors(model: nn.Module) -> dict[str, torch.Tensor]:
     """获取模型中所有参数和缓冲区的扁平化字典"""
@@ -1187,7 +1269,7 @@ def parse_ptxas_info(log_str: str) -> Dict[str, Any]:
 
 
 # vvv --- [!!! 已更新 !!!] 真实 NCU 分析器 (现在是通用的) --- vvv
-def get_real_ncu_metrics(module_path, module_name, inputs) -> Dict[str, float]:
+def get_real_ncu_metrics(module_path, module_name, inputs, init_inputs=None) -> Dict[str, float]:
     """
     动态创建一个目标脚本，运行 ncu，解析 CSV 输出，并返回指标。
     [!!! 已更新 !!!] 接受通用输入和内核/wrapper 名称。
@@ -1202,6 +1284,8 @@ def get_real_ncu_metrics(module_path, module_name, inputs) -> Dict[str, float]:
 
         # [!!! 已更新 !!!] 保存输入以供 ncu 脚本加载
         torch.save(inputs, '_ncu_inputs.pt')
+        if init_inputs is not None:
+            torch.save(init_inputs, '_ncu_init_inputs.pt')
 
         # 2. 构建 ncu 命令 (不带 --metrics 以获取全集)
         ncu_command = [
@@ -1301,6 +1385,8 @@ def get_real_ncu_metrics(module_path, module_name, inputs) -> Dict[str, float]:
         # [!!! 新增 !!!] 清理 ncu 输入文件
         if os.path.exists("_ncu_inputs.pt"):
             os.remove("_ncu_inputs.pt")
+        if os.path.exists("_ncu_init_inputs.pt"):
+            os.remove("_ncu_init_inputs.pt")
             
     print(f"--- [ NCU 指标已解析 (共 {len(ncu_metrics)} 个) ] ---")
     if ncu_metrics:

@@ -1,255 +1,200 @@
+import math
 import torch
 import torch.nn as nn
 from torch.utils.cpp_extension import load_inline
 
-# ---------------------------------------------------------------------------
-# CUDA/C++ source
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# CUDA / C++ source
+# ----------------------------------------------------------------------
 source = r'''
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <vector>
 
-#define TILE_H_OUT 8
-#define TILE_W_OUT 8
-#define TILE_D_OUT 1   // fixed
+#define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
+#define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
+#define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
-template <typename scalar_t>
-__global__ void conv3d_forward_kernel_tiled(
-        const scalar_t* __restrict__ input,
-        const scalar_t* __restrict__ weight,
-        const scalar_t* __restrict__ bias,
-        scalar_t* __restrict__ output,
-        const int64_t N,
-        const int64_t C_in,
-        const int64_t D_in,
-        const int64_t H_in,
-        const int64_t W_in,
-        const int64_t C_out,
-        const int64_t Kd,
-        const int64_t Kh,
-        const int64_t Kw,
-        const int      stride,
-        const int      padding,
-        const int      dilation,
-        const int64_t D_out,
-        const int64_t H_out,
-        const int64_t W_out,
-        const bool     bias_defined)
-{
-    /* ----------------------- block → logical coordinates ------------------ */
-    const int w_tile = blockIdx.x;
-    const int h_tile = blockIdx.y;
+///////////////////////////////////////////////////////////////////
+// Kernel : one thread computes one output element (n, oc, od, oh, ow)
+///////////////////////////////////////////////////////////////////
+__global__ void conv3d_forward_kernel(
+        const float *__restrict__ input,      // [N, C, D, H, W]
+        const float *__restrict__ weight,     // [OC, Cg, kD, kH, kW]
+        const float *__restrict__ bias,       // [OC]  (can be empty)
+        float *__restrict__ output,           // [N, OC, Od, Oh, Ow]
+        int N, int C, int D, int H, int W,
+        int OC, int kD, int kH, int kW,
+        int stride_d, int stride_h, int stride_w,
+        int pad_d, int pad_h, int pad_w,
+        int dil_d, int dil_h, int dil_w,
+        int groups,
+        int outD, int outH, int outW,
+        int bias_flag) {
 
-    int64_t ncd = blockIdx.z;
-    const int64_t d_out = ncd % D_out;
-    ncd /= D_out;
-    const int64_t oc = ncd % C_out;
-    const int64_t n  = ncd / C_out;
+    long long idx = blockIdx.x * blockDim.x + threadIdx.x;
+    long long total = (long long)N * OC * outD * outH * outW;
+    if (idx >= total) return;
 
-    /* thread coords inside tile */
-    const int tw = threadIdx.x;   // 0 … TILE_W_OUT-1
-    const int th = threadIdx.y;   // 0 … TILE_H_OUT-1
+    // Decompose linear index -> coordinates
+    int ow = idx % outW;
+    idx /= outW;
+    int oh = idx % outH;
+    idx /= outH;
+    int od = idx % outD;
+    idx /= outD;
+    int oc = idx % OC;
+    int n  = idx / OC;
 
-    const int64_t w_out = w_tile * TILE_W_OUT + tw;
-    const int64_t h_out = h_tile * TILE_H_OUT + th;
+    int channels_per_group = C / groups;
+    int group_id = oc / (OC / groups);
+    int ic_start = group_id * channels_per_group;
+    int ic_end   = ic_start + channels_per_group;
 
-    /* determine validity of this thread's output element */
-    const bool is_valid = (w_out < W_out) && (h_out < H_out) &&
-                          (d_out < D_out) && (oc < C_out) && (n < N);
+    // Initialize accumulator with bias (if any)
+    float val = bias_flag ? bias[oc] : 0.0f;
 
-    /* ----------------- Derived tile sizes (run-time due to stride/ dilation) */
-    const int TILE_H_IN = TILE_H_OUT * stride + (Kh - 1) * dilation;
-    const int TILE_W_IN = TILE_W_OUT * stride + (Kw - 1) * dilation;
-    const int64_t TILE_ELEMS = static_cast<int64_t>(Kd) * TILE_H_IN * TILE_W_IN;
+    // Iterate over kernel volume
+    for (int kd = 0; kd < kD; ++kd) {
+        int in_d = od * stride_d - pad_d + kd * dil_d;
+        if (in_d < 0 || in_d >= D) continue;
 
-    extern __shared__ char smem_raw[];
-    scalar_t* smem = reinterpret_cast<scalar_t*>(smem_raw);
+        for (int kh = 0; kh < kH; ++kh) {
+            int in_h = oh * stride_h - pad_h + kh * dil_h;
+            if (in_h < 0 || in_h >= H) continue;
 
-    /* bases in input tensor */
-    const int64_t d_in_base = d_out * stride - padding;
-    const int64_t h_in_base = h_tile * TILE_H_OUT * stride - padding;
-    const int64_t w_in_base = w_tile * TILE_W_OUT * stride - padding;
+            for (int kw = 0; kw < kW; ++kw) {
+                int in_w = ow * stride_w - pad_w + kw * dil_w;
+                if (in_w < 0 || in_w >= W) continue;
 
-    /* local offsets for this output element in the shared tile */
-    const int loc_h = th * stride;
-    const int loc_w = tw * stride;
+                // Pointer offset helpers
+                long long input_base  = (((long long)n * C * D + ic_start * D + 0LL) * H + 0LL) * W; // n, ic_start, d=0, h=0, w=0
+                long long weight_base = (((long long)oc * channels_per_group) * kD + kd) * kH * kW;  // oc, ic=0 will be added later
 
-    scalar_t acc = static_cast<scalar_t>(0);
+                for (int ic = ic_start; ic < ic_end; ++ic) {
+                    int w_ic = ic - ic_start;
 
-    /* --------------------------- main loop over C_in ---------------------- */
-    for (int64_t ic = 0; ic < C_in; ++ic)
-    {
-        /* cooperative load */
-        for (int64_t idx = th * TILE_W_OUT + tw; idx < TILE_ELEMS;
-             idx += TILE_H_OUT * TILE_W_OUT)
-        {
-            int64_t t = idx;
-            const int iw_tile = t % TILE_W_IN;   t /= TILE_W_IN;
-            const int ih_tile = t % TILE_H_IN;   t /= TILE_H_IN;
-            const int kd_tile = t;               // 0 … Kd-1
+                    long long inp_idx = input_base
+                        + ((long long)ic - ic_start) * D * H * W     // step through channel
+                        + (long long)in_d * H * W
+                        + (long long)in_h * W
+                        + in_w;
 
-            const int64_t d_in = d_in_base + kd_tile * dilation;
-            const int64_t h_in = h_in_base + ih_tile;
-            const int64_t w_in = w_in_base + iw_tile;
+                    long long w_idx  = weight_base
+                        + ((long long)w_ic) * kD * kH * kW
+                        + (long long)kh * kW
+                        + kw;
 
-            scalar_t val = static_cast<scalar_t>(0);
-            if (d_in >= 0 && d_in < D_in &&
-                h_in >= 0 && h_in < H_in &&
-                w_in >= 0 && w_in < W_in)
-            {
-                const int64_t input_idx =
-                    (((n * C_in + ic) * D_in + d_in) * H_in + h_in) * W_in + w_in;
-                val = input[input_idx];
-            }
-            smem[idx] = val;
-        }
-        __syncthreads();
-
-        /* compute */
-        for (int64_t kd = 0; kd < Kd; ++kd)
-        {
-            int base = (kd * TILE_H_IN + loc_h) * TILE_W_IN + loc_w;
-            for (int64_t kh = 0; kh < Kh; ++kh)
-            {
-                int row = base + kh * dilation * TILE_W_IN;
-                for (int64_t kw = 0; kw < Kw; ++kw)
-                {
-                    scalar_t in_val = smem[row + kw * dilation];
-                    int64_t w_idx =
-                        ((((oc * C_in + ic) * Kd + kd) * Kh + kh) * Kw + kw);
-                    acc = fma(in_val, weight[w_idx], acc);
+                    val += input[inp_idx] * weight[w_idx];
                 }
             }
         }
-        __syncthreads();   // ensure smem not overwritten before all threads finish
     }
 
-    if (bias_defined)
-        acc += bias[oc];
-
-    /* write back result only for valid threads */
-    if (is_valid)
-    {
-        const int64_t out_idx =
-            (((n * C_out + oc) * D_out + d_out) * H_out + h_out) * W_out + w_out;
-        output[out_idx] = acc;
-    }
+    // Store result
+    long long out_idx = (((long long)n * OC + oc) * outD + od) * outH * outW
+                        + (long long)oh * outW + ow;
+    output[out_idx] = val;
 }
 
+///////////////////////////////////////////////////////////////////
+// Host launcher
+///////////////////////////////////////////////////////////////////
+torch::Tensor conv3d_forward(torch::Tensor input,
+                             torch::Tensor weight,
+                             torch::Tensor bias,        // can be empty tensor
+                             int stride_d, int stride_h, int stride_w,
+                             int pad_d, int pad_h, int pad_w,
+                             int dil_d, int dil_h, int dil_w,
+                             int groups,
+                             bool bias_flag) {
 
-/* ---------------------------  HOST INTERFACE  ---------------------------- */
-torch::Tensor conv3d_cuda(torch::Tensor input,
-                          torch::Tensor weight,
-                          torch::Tensor bias,
-                          int stride,
-                          int padding,
-                          int dilation)
-{
-    TORCH_CHECK(input.is_cuda(),  "input must be on CUDA");
-    TORCH_CHECK(weight.is_cuda(), "weight must be on CUDA");
-    TORCH_CHECK(input.scalar_type() == torch::kFloat32, "only float32 supported");
-    TORCH_CHECK(weight.scalar_type() == torch::kFloat32, "only float32 supported");
-    TORCH_CHECK(input.is_contiguous(),  "input must be contiguous");
-    TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
-
-    const bool bias_defined = bias.defined() && bias.numel() > 0;
-    if (bias_defined) {
-        TORCH_CHECK(bias.is_cuda(), "bias must be on CUDA");
-        TORCH_CHECK(bias.scalar_type() == torch::kFloat32, "only float32 bias supported");
-        TORCH_CHECK(bias.is_contiguous(), "bias must be contiguous");
+    // ----------------- argument checks -----------------
+    CHECK_INPUT(input);
+    CHECK_INPUT(weight);
+    if (bias_flag) {
+        CHECK_INPUT(bias);
+        TORCH_CHECK(bias.numel() == weight.size(0), "bias shape mismatch");
     }
 
-    /* ------------------- tensor & kernel parameters ---------------------- */
-    const auto  sizes   = input.sizes();
-    const int64_t N     = sizes[0];
-    const int64_t C_in  = sizes[1];
-    const int64_t D_in  = sizes[2];
-    const int64_t H_in  = sizes[3];
-    const int64_t W_in  = sizes[4];
+    TORCH_CHECK(input.dim()  == 5, "input should be NDHWC with 5 dims (N,C,D,H,W)");
+    TORCH_CHECK(weight.dim() == 5, "weight should be (OC,C_per_group,kD,kH,kW)");
+    int64_t N  = input.size(0);
+    int64_t C  = input.size(1);
+    int64_t D  = input.size(2);
+    int64_t H  = input.size(3);
+    int64_t W  = input.size(4);
 
-    const auto  ws      = weight.sizes();
-    const int64_t C_out = ws[0];
-    const int64_t Kd    = ws[2];
-    const int64_t Kh    = ws[3];
-    const int64_t Kw    = ws[4];
-    TORCH_CHECK(ws[1] == C_in, "groups != 1 is not supported");
+    int64_t OC = weight.size(0);
+    int64_t kD = weight.size(2);
+    int64_t kH = weight.size(3);
+    int64_t kW = weight.size(4);
 
-    const int64_t D_out =
-        (D_in + 2 * padding - dilation * (Kd - 1) - 1) / stride + 1;
-    const int64_t H_out =
-        (H_in + 2 * padding - dilation * (Kh - 1) - 1) / stride + 1;
-    const int64_t W_out =
-        (W_in + 2 * padding - dilation * (Kw - 1) - 1) / stride + 1;
-    TORCH_CHECK(D_out > 0 && H_out > 0 && W_out > 0, "Invalid output size");
+    TORCH_CHECK(C % groups == 0, "C must be divisible by groups");
+    TORCH_CHECK(OC % groups == 0, "OC must be divisible by groups");
 
-    auto output = torch::empty({N, C_out, D_out, H_out, W_out},
-                               input.options());
+    // Compute output sizes following PyTorch formula
+    auto outD = (D + 2 * pad_d - dil_d * (kD - 1) - 1) / stride_d + 1;
+    auto outH = (H + 2 * pad_h - dil_h * (kH - 1) - 1) / stride_h + 1;
+    auto outW = (W + 2 * pad_w - dil_w * (kW - 1) - 1) / stride_w + 1;
 
-    /* ----------------------- launch configuration ------------------------ */
-    const dim3 block(TILE_W_OUT, TILE_H_OUT, 1);
+    TORCH_CHECK(outD > 0 && outH > 0 && outW > 0, "Output size is <= 0");
 
-    const dim3 grid(
-        (W_out + TILE_W_OUT - 1) / TILE_W_OUT,
-        (H_out + TILE_H_OUT - 1) / TILE_H_OUT,
-        N * C_out * D_out);
+    auto output = torch::zeros({N, OC, outD, outH, outW}, input.options());
 
-    const int TILE_H_IN = TILE_H_OUT * stride + (Kh - 1) * dilation;
-    const int TILE_W_IN = TILE_W_OUT * stride + (Kw - 1) * dilation;
-    const size_t smem_bytes = static_cast<size_t>(Kd) *
-                              TILE_H_IN * TILE_W_IN *
-                              sizeof(float);
+    // Grid / block
+    long long total = (long long)N * OC * outD * outH * outW;
+    const int threads = 256;
+    const int blocks  = (total + threads - 1) / threads;
 
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "conv3d_forward_cuda_tiled", ([&] {
-        conv3d_forward_kernel_tiled<scalar_t>
-            <<<grid, block, smem_bytes>>>(
-                input.data_ptr<scalar_t>(),
-                weight.data_ptr<scalar_t>(),
-                bias_defined ? bias.data_ptr<scalar_t>() : nullptr,
-                output.data_ptr<scalar_t>(),
-                N, C_in, D_in, H_in, W_in,
-                C_out,
-                Kd, Kh, Kw,
-                stride, padding, dilation,
-                D_out, H_out, W_out,
-                bias_defined);
-    }));
-
+    conv3d_forward_kernel<<<blocks, threads>>>(
+        input.data_ptr<float>(),
+        weight.data_ptr<float>(),
+        bias_flag ? bias.data_ptr<float>() : nullptr,
+        output.data_ptr<float>(),
+        (int)N, (int)C, (int)D, (int)H, (int)W,
+        (int)OC, (int)kD, (int)kH, (int)kW,
+        stride_d, stride_h, stride_w,
+        pad_d, pad_h, pad_w,
+        dil_d, dil_h, dil_w,
+        groups,
+        (int)outD, (int)outH, (int)outW,
+        bias_flag ? 1 : 0
+    );
     cudaError_t err = cudaGetLastError();
-    TORCH_CHECK(err == cudaSuccess, "conv3d_forward_kernel launch failed: ",
-                cudaGetErrorString(err));
+    TORCH_CHECK(err == cudaSuccess, "conv3d_forward_kernel launch failed with error: ", cudaGetErrorString(err));
 
     return output;
 }
 '''
 
-# -----------------------------  C++ stub  -----------------------------------
 cpp_src = r'''
-torch::Tensor conv3d_cuda(torch::Tensor input,
-                          torch::Tensor weight,
-                          torch::Tensor bias,
-                          int stride,
-                          int padding,
-                          int dilation);
+torch::Tensor conv3d_forward(torch::Tensor input,
+                             torch::Tensor weight,
+                             torch::Tensor bias,
+                             int stride_d, int stride_h, int stride_w,
+                             int pad_d, int pad_h, int pad_w,
+                             int dil_d, int dil_h, int dil_w,
+                             int groups,
+                             bool bias_flag);
 '''
 
-# ---------------------------------------------------------------------------
-# Build the extension
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Inline load
+# ----------------------------------------------------------------------
 conv3d_cuda = load_inline(
-    name='conv3d_cuda_opt',
+    name='conv3d_cuda',
     cpp_sources=cpp_src,
     cuda_sources=source,
-    functions=['conv3d_cuda'],
+    functions=['conv3d_forward'],
     with_cuda=True,
-    verbose=True,               # mandated
-    extra_cuda_cflags=['-O3', '--ptxas-options=-v']
+    verbose=True,
+    extra_cuda_cflags=['-O3', '--ptxas-options=-v'],
 )
 
-# ---------------------------------------------------------------------------
-# Python-side wrapper class
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Python module that uses the CUDA kernel
+# ----------------------------------------------------------------------
 class ModelNew(nn.Module):
     def __init__(self,
                  in_channels: int,
@@ -259,33 +204,54 @@ class ModelNew(nn.Module):
                  padding: int = 0,
                  dilation: int = 1,
                  groups: int = 1,
-                 bias: bool = False):
+                 bias: bool = False) -> None:
         super().__init__()
-        self.stride   = stride
-        self.padding  = padding
-        self.dilation = dilation
-        self.groups   = groups  # kept for API but only 1 supported
 
-        w_shape = (out_channels, in_channels // groups,
-                   kernel_size, kernel_size, kernel_size)
-        self.weight = nn.Parameter(torch.empty(w_shape, device='cuda'))
+        # handle tuple / int inputs
+        def _triple(v):
+            if isinstance(v, int):
+                return (v, v, v)
+            return tuple(v)
+        self.kernel_size = _triple(kernel_size)
+        self.stride      = _triple(stride)
+        self.padding     = _triple(padding)
+        self.dilation    = _triple(dilation)
+
+        self.in_channels  = in_channels
+        self.out_channels = out_channels
+        self.groups       = groups
+
+        # parameters
+        kD, kH, kW = self.kernel_size
+        self.weight = nn.Parameter(
+            torch.empty(out_channels, in_channels // groups, kD, kH, kW)
+        )
         if bias:
-            self.bias = nn.Parameter(torch.empty(out_channels, device='cuda'))
+            self.bias = nn.Parameter(torch.empty(out_channels))
         else:
             self.register_parameter('bias', None)
 
-        nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
+        # initialization (same as nn.Conv3d default)
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
         if bias:
-            fan_in = in_channels * kernel_size * kernel_size * kernel_size
-            bound  = 1 / (fan_in ** 0.5) if fan_in > 0 else 0
+            fan_in = in_channels * kD * kH * kW // groups
+            bound = 1 / math.sqrt(fan_in)
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return conv3d_cuda.conv3d_cuda(
-            x.contiguous(),
-            self.weight.contiguous(),
-            self.bias.contiguous() if self.bias is not None else torch.Tensor(),
-            self.stride,
-            self.padding,
-            self.dilation
+        # Ensure contiguous tensors
+        x_in   = x.contiguous()
+        weight = self.weight.contiguous()
+        bias   = self.bias.contiguous() if self.bias is not None else torch.empty(0, device=x.device)
+
+        out = conv3d_cuda.conv3d_forward(
+            x_in,
+            weight,
+            bias,
+            *self.stride,
+            *self.padding,
+            *self.dilation,
+            self.groups,
+            self.bias is not None
         )
+        return out

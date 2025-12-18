@@ -619,7 +619,8 @@ def run_optimization_on_problem(
                 current_module_name, 
                 # kernel_name,            
                 # wrapper_function_name,  
-                inputs                  
+                inputs,
+                init_inputs                  
             )
             current_ncu_metrics = best_ncu_metrics # liuxitai:到这里目前已经改好了
             
@@ -964,7 +965,8 @@ def run_optimization_on_problem(
             new_ncu_metrics = cuda_utils.get_real_ncu_metrics(
                 module.__file__, 
                 current_module_name, 
-                inputs    
+                inputs,
+                init_inputs
             )
             
             if new_time_ms < best_time_ms:

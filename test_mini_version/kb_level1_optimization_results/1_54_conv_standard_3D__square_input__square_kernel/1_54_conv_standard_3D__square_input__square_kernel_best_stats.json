@@ -1,7 +1,7 @@
 {
   "problem_name": "kb_1_54_conv_standard_3D__square_input__square_kernel",
-  "baseline_ms": 3.5558810424804688,
-  "best_cuda_ms": 76.87024536132813,
-  "speedup": 0.04625822417719719,
-  "last_updated_round": 1
+  "baseline_ms": 3.555696716308594,
+  "best_cuda_ms": 73.49329833984375,
+  "speedup": 0.04838123742747989,
+  "last_updated_round": 0
 }
