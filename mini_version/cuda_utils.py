@@ -22,6 +22,8 @@ import numpy as np
 from typing import Dict, List, Any # <--- [修复] 添加 List
 import gc
 import copy
+import torch.nn as nn
+from collections import defaultdict
 
 # 编译后的模块的全局缓存
 _gemm_module = None
@@ -100,108 +102,103 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 """
-# ^^^ --- 模板结束 --- ^^^
 
-# # 返回cuda_code 模块
-# def load_gemm_module(cuda_code):
-#     global _gemm_module
-#     _gemm_module = 
 
-# class FDCapturer:
-#     def __init__(self):
-#         self._stdout_fd = sys.stdout.fileno()
-#         self._stderr_fd = sys.stderr.fileno()
-#         self._saved_stdout_fd = os.dup(self._stdout_fd)
-#         self._saved_stderr_fd = os.dup(self._stderr_fd)
-#         self._temp_file = tempfile.TemporaryFile(mode='w+b') # 使用二进制模式避免编码问题
+def _named_tensors(model: nn.Module) -> dict[str, torch.Tensor]:
+    """获取模型中所有参数和缓冲区的扁平化字典"""
+    named: dict[str, torch.Tensor] = {}
+    for k, p in model.named_parameters(recurse=True):
+        named[f"param::{k}"] = p
+    for k, b in model.named_buffers(recurse=True):
+        named[f"buffer::{k}"] = b
+    return named
 
-#     def __enter__(self):
-#         # 刷新 Python 缓冲区，防止之前的输出混入
-#         sys.stdout.flush()
-#         sys.stderr.flush()
-#         # 将 stdout (1) and stderr (2) 重定向到临时文件
-#         os.dup2(self._temp_file.fileno(), self._stdout_fd)
-#         os.dup2(self._temp_file.fileno(), self._stderr_fd)
-#         return self
+@torch.no_grad()
+def _safe_copy_(dst: torch.Tensor, src: torch.Tensor) -> bool:
+    """尝试直接拷贝（形状必须完全一致）"""
+    if dst.shape != src.shape:
+        return False
+    dst.copy_(src.to(dtype=dst.dtype, device=dst.device))
+    return True
 
-#     def __exit__(self, exc_type, exc_val, exc_tb):
-#         # 再次刷新
-#         sys.stdout.flush()
-#         sys.stderr.flush()
-#         # 恢复标准输出/错误
-#         os.dup2(self._saved_stdout_fd, self._stdout_fd)
-#         os.dup2(self._saved_stderr_fd, self._stderr_fd)
-#         os.close(self._saved_stdout_fd)
-#         os.close(self._saved_stderr_fd)
-    
-#     def get_output(self):
-#         self._temp_file.seek(0)
-#         # 读取并解码
-#         return self._temp_file.read().decode('utf-8', errors='replace')
+@torch.no_grad()
+def _try_map_shape_and_copy_(dst: torch.Tensor, src: torch.Tensor) -> bool:
+    """
+    尝试处理形状不匹配的情况（例如生成的 Kernel 使用了不同的内存布局）。
+    支持：转置、压缩维度等常见操作。
+    """
+    s = tuple(src.shape)
+    d = tuple(dst.shape)
 
-# # --- 修改后的 load_module ---
-# def load_module(cuda_code, module_name, init_inputs):
-#     shutil.rmtree(os.path.expanduser('~/.cache/torch_extensions'), ignore_errors=True)# IMPORTANT：调用load_module之前强制清空缓存，因为pytorch会根据cuda_code中load_inline中的name选项是否一致判断这个是否之前编译过，如果编译过就不会编译导致获取不到PTSAX信息（但是实际上为了获取PTXAS信息重新编译会影响整个流程的时间）
-#     TEST_NN_MODEL_NAME = 'ModelNew'
-#     model_instance = None
-#     captured_log = ""
-    
-#     try:
-#         with tempfile.TemporaryDirectory() as temp_dir:
-#             # 技巧：为了每次强制触发编译（获取PTXAS信息），
-#             # 可以在这里动态修改 cuda_code 中的 name 参数，或者让 load_inline 的 name 随时间变化。
-#             # 这里假设外部传入的 cuda_code 已经是唯一的，或者我们依赖清理缓存。
+    # 1. 完全相同，直接拷
+    if s == d:
+        dst.copy_(src.to(dtype=dst.dtype, device=dst.device))
+        return True
+
+    # 2. 5D 权重首两维交换 (常见于 Conv3d: Out,In,... <-> In,Out,...)
+    if len(s) == 5 and len(d) == 5 and s[0] == d[1] and s[1] == d[0] and s[2:] == d[2:]:
+        dst.copy_(src.permute(1, 0, 2, 3, 4).contiguous().to(dtype=dst.dtype, device=dst.device))
+        return True
+
+    # 3. 压缩/解压维度 (例如 Linear 的 weight 是 2D，但某些 Conv 实现可能是 4D (Out, In, 1, 1))
+    if src.numel() == dst.numel():
+        # 尝试 reshape 后拷贝
+        try:
+            dst.copy_(src.to(dtype=dst.dtype, device=dst.device).reshape(d).contiguous())
+            return True
+        except:
+            pass
             
-#             temp_file = os.path.join(temp_dir, "cuda_code_gen.py")
-#             with open(temp_file, "w") as f:
-#                 f.write(cuda_code)
+    return False
 
-#             spec = importlib.util.spec_from_file_location(TEST_NN_MODEL_NAME, temp_file)
-#             if spec is None:
-#                 print("ERROR in load_module: spec is None")
-#                 return None, "", ""
+@torch.no_grad()
+def align_params_smart(ref_model: nn.Module, test_model: nn.Module):
+    """
+    智能对齐参数：
+    1. 优先尝试同名拷贝。
+    2. 如果名字对不上，尝试通过“唯一形状匹配”来拷贝。
+    """
+    if ref_model is None:
+        return
 
-#             module = importlib.util.module_from_spec(spec)
-#             sys.modules[TEST_NN_MODEL_NAME] = module
+    ref_named = _named_tensors(ref_model)
+    test_named = _named_tensors(test_model)
+    aligned_test_keys = set()
 
-#             # ---------- 核心修改：使用 FD Capturer 替代 redirect_stdout ----------
-#             capturer = FDCapturer()
-#             try:
-#                 with capturer:
-#                     # exec_module 会执行 load_inline，从而触发 nvcc
-#                     spec.loader.exec_module(module)
-#             except Exception as e:
-#                 # 即使出错，也要把捕获到的编译器报错拿出来
-#                 print(f"Compilation/Execution Error: {e}")
-            
-#             # 获取所有底层输出 (nvcc output, ninja output, etc.)
-#             captured_log = capturer.get_output()
+    print("--- Syncing Weights (Smart Alignment) ---")
 
-#             model_class = getattr(module, TEST_NN_MODEL_NAME, None)
-#             if model_class is None:
-#                 print("ERROR: Model class not found")
-#                 return None, captured_log, captured_log
+    # 1. 策略 A：同名同形状 (Name Match)
+    for name, t_dst in test_named.items():
+        t_src = ref_named.get(name, None)
+        if t_src is not None:
+            if _try_map_shape_and_copy_(t_dst, t_src):
+                aligned_test_keys.add(name)
+                # print(f"  [Sync] Matched by name: {name}")
 
-#             # 实例化模型
-#             try:
-#                 if init_inputs is not None:
-#                     if isinstance(init_inputs, (list, tuple)):
-#                         model_instance = model_class(*init_inputs)
-#                     elif isinstance(init_inputs, dict):
-#                         model_instance = model_class(**init_inputs)
-#                     else:
-#                         model_instance = model_class(init_inputs)
-#                 else:
-#                     model_instance = model_class()
-#             except Exception as e:
-#                 print(f"Instantiation Error: {e}")
-
-#     except Exception as e:
-#         print(f"General Error: {e}")
+    # 2. 策略 B：唯一形状匹配 (Unique Shape Match)
+    # 如果生成的代码改了层名字（比如 self.conv 改成了 self.conv1），load_state_dict 会失败。
+    # 这里通过形状来“猜”对应关系。
+    shape2ref = defaultdict(list)
+    shape2test = defaultdict(list)
     
-#     # 为了兼容你原来的返回格式，这里把 log 同时赋给 stdout 和 stderr
-#     # 因为 nvcc 的输出通常混合在一起，FD 捕获时也是混合的
-#     return model_instance, captured_log, captured_log
+    for n, t in ref_named.items():
+        shape2ref[tuple(t.shape)].append((n, t))
+    
+    for n, t in test_named.items():
+        if n not in aligned_test_keys: # 只处理还没对齐的
+            shape2test[tuple(t.shape)].append((n, t))
+
+    for shp, items in shape2test.items():
+        # 如果这个形状在 ref 和 test 中都只出现了一次，那它们肯定是一对！
+        if len(items) == 1 and len(shape2ref.get(shp, [])) == 1:
+            tname_dst, t_dst = items[0]
+            _, t_src = shape2ref[shp][0]
+            if _safe_copy_(t_dst, t_src):
+                aligned_test_keys.add(tname_dst)
+                print(f"  [Sync] Matched by unique shape: {shp}")
+
+    # 统计
+    print(f"  Synced {len(aligned_test_keys)} / {len(test_named)} tensors.")
 
 # --- 1. 添加 FDCapturer 类 ---
 class FDCapturer:
@@ -251,7 +248,7 @@ def extract_error_and_next_line(text):
     return "\n".join(results)
 
 # --- 2. 修改 load_module ---
-def load_module(cuda_code, module_name, init_inputs):
+def load_module(cuda_code, module_name, init_inputs, ref_model):
     # 1. 强制清理缓存
     shutil.rmtree(os.path.expanduser('~/.cache/torch_extensions'), ignore_errors=True)
     
@@ -330,6 +327,13 @@ def load_module(cuda_code, module_name, init_inputs):
                 
             if torch.cuda.is_available():
                     model_instance = model_instance.cuda()
+
+            if ref_model is not None:
+                try:
+                    align_params_smart(ref_model, model_instance)
+                except Exception as e:
+                    print(f"[Warning] Smart weight sync failed: {e}")
+                    # 即使同步失败，也让它继续跑，说不定 LLM 运气好
             
             # [!!! 关键修复 1 !!!] 绑定 __file__ 属性，供 main.py 中的 NCU 使用
             model_instance.__file__ = file_path

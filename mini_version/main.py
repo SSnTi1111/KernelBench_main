@@ -534,7 +534,8 @@ def run_optimization_on_problem(
     iteration_rounds,
     history_file_path,
     baseline_time_ms, # [!!! 已修改 !!!] 接收Pytorch基准
-    full_pytorch_source_code
+    full_pytorch_source_code,
+    pytorch_kernel_module
 ):
     """
     运行通用的、线性的多智能体优化循环。
@@ -594,7 +595,8 @@ def run_optimization_on_problem(
                 # cpp_source, 
                 best_kernel_code_cuda, 
                 current_module_name,
-                init_inputs
+                init_inputs,
+                pytorch_kernel_module
                 # wrapper_function_name=wrapper_function_name  
             )
             print("Baseline kernel compiled successfully.")
@@ -844,7 +846,7 @@ def run_optimization_on_problem(
                 # current_code_is_correct = False
                 for j in range(5):
                     # gc.collect()
-                    verResult, errMessage = validate_extracted_code(new_kernel_code_full, init_inputs, inputs, ref_outputs)# 这个errMessage中对于结果错误的信息没有做前五个错误数据提取，是全部的错误数据
+                    verResult, errMessage = validate_extracted_code(new_kernel_code_full, init_inputs, inputs, ref_outputs, pytorch_kernel_module)# 这个errMessage中对于结果错误的信息没有做前五个错误数据提取，是全部的错误数据
                     if not verResult:
                         print(f"尝试修正当前错误，第{j}次尝试")
                         err_str = str(errMessage)
@@ -869,6 +871,7 @@ def run_optimization_on_problem(
                     new_kernel_code_full,
                     current_module_name,
                     init_inputs, 
+                    pytorch_kernel_module
                 )
                 # print("Compilation successful.")
                 

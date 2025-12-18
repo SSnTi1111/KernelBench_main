@@ -1,4 +1,4 @@
 {
   "problem_name": "1_54_conv_standard_3D__square_input__square_kernel",
-  "pytorch_baseline_ms": 3.5595263671875
+  "pytorch_baseline_ms": 3.5558810424804688
 }

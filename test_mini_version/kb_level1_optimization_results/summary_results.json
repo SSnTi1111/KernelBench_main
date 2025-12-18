@@ -274,5 +274,11 @@
     "best_cuda_ms": 7.618867492675781,
     "speedup": 0.9756003733952108,
     "status": "Success"
+  },
+  "1_54_conv_standard_3D__square_input__square_kernel": {
+    "baseline_ms": 3.5558401489257814,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed optimization loop: cannot access local variable 'pytorch_kernel_module' where it is not associated with a value"
   }
 }

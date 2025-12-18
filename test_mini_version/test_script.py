@@ -742,7 +742,7 @@ def extract_error_and_next_line(text):
 #             "ioErr": ""
 #         }
 
-def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outputs=None):
+def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outputs=None, ref_model=None):
     TEST_NN_MODEL_NAME = 'ModelNew'
     
     # 定义需要在 finally 中清理的变量名，防止 UnboundLocalError
@@ -811,6 +811,14 @@ def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outpu
                     model_instance = model_class()
                 if torch.cuda.is_available():
                     model_instance = model_instance.cuda()
+                
+                if ref_model is not None:
+                    try:
+                        mv_cuda_utils.align_params_smart(ref_model, model_instance)
+                    except Exception as e:
+                        print(f"[Warning] Smart weight sync failed: {e}")
+                        # 即使同步失败，也让它继续跑，说不定 LLM 运气好
+
             except Exception as e:
                 return False, {"exeErr": f"Error: Failed to instantiate '{TEST_NN_MODEL_NAME}': {str(e)}", "ioErr": ""}
 
@@ -939,6 +947,8 @@ def validate_extracted_code(cuda_code, init_inputs, test_inputs=None, test_outpu
             del cloned_inputs
         if model_instance is not None: 
             del model_instance
+        if ref_model is not None:
+            del ref_model
         
         # if model_class is not None:
         #     del model_class
@@ -1193,7 +1203,7 @@ def main(args):
                             break
 
                         print(f"--- Verification Attempt {attempt+1}/{args.max_correction_attempts} ---")
-                        verResult, errMessage = validate_extracted_code(initial_cuda_code, init_inputs, gpu_inputs, ref_outputs)
+                        verResult, errMessage = validate_extracted_code(initial_cuda_code, init_inputs, gpu_inputs, ref_outputs, pytorch_kernel_module)
 
 
 
@@ -1255,8 +1265,7 @@ def main(args):
             best_time_ms = float('inf')
             best_kernel_code_full = initial_cuda_code # 默认为初始代码
             status = "Failed (Unknown)"
-            del pytorch_kernel_module
-            torch.cuda.empty_cache()
+            
             try:
                 # [!!! 核心调用 !!!] 
                 # (这部分不变，因为它依赖 mini_version, 
@@ -1275,7 +1284,8 @@ def main(args):
                     iteration_rounds=mv_config.ITERATION_ROUNDS,
                     history_file_path=history_file_path,
                     baseline_time_ms=baseline_time_ms, # [!!! 已更新，传入基线时间 !!!]
-                    full_pytorch_source_code = full_pytorch_source_code
+                    full_pytorch_source_code = full_pytorch_source_code,
+                    pytorch_kernel_module = pytorch_kernel_module
                 )
                 
                 if 'error' in best_node:
@@ -1349,7 +1359,6 @@ def main(args):
                     del inputs
                 if 'cpp_wrapper_gpu_inputs' in locals() and cpp_wrapper_gpu_inputs is not None:
                     del cpp_wrapper_gpu_inputs
-
                 # 删模型 (最占显存的部分)
                 if 'pytorch_kernel_module' in locals() and pytorch_kernel_module is not None:
                     del pytorch_kernel_module
