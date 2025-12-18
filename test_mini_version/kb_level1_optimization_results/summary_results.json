@@ -280,5 +280,11 @@
     "best_cuda_ms": Infinity,
     "speedup": 0.0,
     "status": "Failed optimization loop: cannot access local variable 'pytorch_kernel_module' where it is not associated with a value"
+  },
+  "1_30_Softsign": {
+    "baseline_ms": 25.92235595703125,
+    "best_cuda_ms": Infinity,
+    "speedup": 0.0,
+    "status": "Failed optimization loop: cannot access local variable 'metrics_shown' where it is not associated with a value"
   }
 }
