@@ -1168,16 +1168,199 @@ def main(args):
                 print(f"Attempt 1/{args.max_correction_attempts + 1}: Generating initial C++/CUDA kernel...")
                 
                 # 3.1. 初始生成 (Attempt 0)
-                cuda_code = generate_initial_cuda_kernel(
-                    full_pytorch_source_code, 
-                    cpp_wrapper_gpu_inputs, # [!!! 已修复 !!!] 
-                    ref_outputs, 
-                )
+                # cuda_code = generate_initial_cuda_kernel(
+                #     full_pytorch_source_code, 
+                #     cpp_wrapper_gpu_inputs, # [!!! 已修复 !!!] 
+                #     ref_outputs, 
+                # )
 
                 #坏
                 # cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n// Kernel: element-wise Sigmoid\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel(const scalar_t* __restrict__ input,\n                               scalar_t* __restrict__ output,\n                               const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        scalar_t val = input[idx];\n        output[idx] = sigmoid_func(val);\n    }\n}\n\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n    auto output = torch::empty_like(input);\n\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    const int64_t blocks = (numel + threads - 1) / threads;\n\n    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "sigmoid_forward_cuda", ([&] {\n        sigmoid_kernel<scalar_t><<<blocks, threads, 0,\n                                   at::cuda::getCurrentCUDAStream()>>>(\n            input.data_ptr<scalar_t>(),\n            output.data_ptr<scalar_t>(),\n            numel);\n    }));\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n    return output;\n}\n\'\'\'\n\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\nsigmoid_module = load_inline(\n    name=\'sigmoid_cuda\',\n    cpp_sources=cpp_src,\n    cuda_sources=source,\n    functions=[\'sigmoid_forward\'],\n    with_cuda=True,\n verbose=True,\n    extra_cuda_cflags=[\'-O2\',\'--ptxas-options=-v\']\n)\n\n\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
                 #好
                 # cuda_code = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\n# ---------------------------------------------------------------------------\n# CUDA source (kernels + C++/ATen host wrappers)\n# ---------------------------------------------------------------------------\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <cuda_fp16.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n/* ---------------------------------------------------------\n * Scalar fallback kernel : one-element per thread\n * ------------------------------------------------------- */\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel_scalar(const scalar_t* __restrict__ input,\n                                      scalar_t* __restrict__ output,\n                                      const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        output[idx] = sigmoid_func(input[idx]);\n    }\n}\n\n/* ---------------------------------------------------------\n * Vectorised kernel : VEC elements per thread\n * VEC = 4 for float (float4, 16-byte transaction)\n *     = 2 for double (double2, 16-byte transaction)\n * The last (numel % VEC) elements are processed by a\n * single thread (vec_idx == 0) inside the same kernel.\n * ------------------------------------------------------- */\ntemplate <typename scalar_t , int VEC>\n__global__ void sigmoid_kernel_vec(const scalar_t* __restrict__ input,\n                                   scalar_t*       __restrict__ output,\n                                   const int64_t   vec_elems,\n                                   const int64_t   tail_start,\n                                   const int64_t   tail_size) {\n    using VecT = typename std::conditional< (sizeof(scalar_t)==4),\n                                            float4,              // 4 x fp32 = 16 B\n                                            double2               // 2 x fp64 = 16 B\n                                          >::type;\n\n    const int64_t vec_idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    /* ---------------- Aligned, vectorised path ---------------- */\n    if (vec_idx < vec_elems) {\n        VecT v = reinterpret_cast<const VecT*>(input)[vec_idx];\n\n        scalar_t* v_elem = reinterpret_cast<scalar_t*>(&v);\n        #pragma unroll\n        for (int i = 0; i < VEC; ++i) {\n            v_elem[i] = sigmoid_func(v_elem[i]);\n        }\n\n        reinterpret_cast<VecT*>(output)[vec_idx] = v;\n    }\n\n    /* ---------------- Tail handling by one thread ------------- */\n    if (tail_size && vec_idx == 0) {\n        for (int64_t j = 0; j < tail_size; ++j) {\n            const int64_t idx = tail_start + j;\n            output[idx] = sigmoid_func(input[idx]);\n        }\n    }\n}\n\n/* ---------------------------------------------------------\n * Host launcher\n * ------------------------------------------------------- */\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n\n    auto output = torch::empty_like(input);\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    // Fast path : fp32 / fp64 with vectorised kernel\n    if (input.scalar_type() == at::kFloat || input.scalar_type() == at::kDouble) {\n\n        if (input.scalar_type() == at::kFloat) {\n            using scalar_t = float;\n            constexpr int  VEC = 4;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                // Fallback to scalar kernel if vector part is empty\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        } else { // double\n            using scalar_t = double;\n            constexpr int  VEC = 2;\n            const int64_t  vec_elems  = numel / VEC;\n            const int64_t  tail_start = vec_elems * VEC;\n            const int64_t  tail_sz    = numel - tail_start;\n            const int64_t  blocks     = (vec_elems + threads - 1) / threads;\n\n            if (blocks > 0) {\n                sigmoid_kernel_vec<scalar_t, VEC><<<blocks, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>(),\n                    output.data_ptr<scalar_t>(),\n                    vec_elems,\n                    tail_start,\n                    tail_sz);\n            } else if (tail_sz) {\n                const int64_t blocks_tail = (tail_sz + threads - 1) / threads;\n                sigmoid_kernel_scalar<scalar_t><<<blocks_tail, threads, 0, stream>>>(\n                    input.data_ptr<scalar_t>() + tail_start,\n                    output.data_ptr<scalar_t>() + tail_start,\n                    tail_sz);\n            }\n        }\n\n    } else {\n        /* Generic scalar kernel for remaining dtypes (half, bfloat16, etc.) */\n        const int64_t blocks = (numel + threads - 1) / threads;\n        AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(),\n                                            "sigmoid_forward_cuda_scalar", ([&] {\n            sigmoid_kernel_scalar<scalar_t><<<blocks, threads, 0, stream>>>(\n                input.data_ptr<scalar_t>(),\n                output.data_ptr<scalar_t>(),\n                numel);\n        }));\n    }\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n\n    return output;\n}\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# C++ function prototypes\n# ---------------------------------------------------------------------------\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\n# ---------------------------------------------------------------------------\n# Build & load extension\n# ---------------------------------------------------------------------------\nsigmoid_module = load_inline(\n    name         = \'sigmoid_cuda_opt\',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = [\'sigmoid_forward\'],\n    with_cuda    = True,\n    verbose      = True,\n    extra_cuda_cflags=[\'-O3\', \'--ptxas-options=-v\']\n)\n\n# ---------------------------------------------------------------------------\n# PyTorch Module wrapper\n# ---------------------------------------------------------------------------\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
+                
+                cuda_code = '''
+
+import torch
+import torch.nn as nn
+import math
+from torch.utils.cpp_extension import load_inline
+
+# -------------------------- CUDA / C++ Sources --------------------------
+source = r"""
+#include <torch/extension.h>
+#include <cuda_runtime.h>
+
+// 使用 float4 向量化读取，大幅提升带宽利用率
+__device__ __forceinline__ float4 load_float4(const float* addr) {
+    return *reinterpret_cast<const float4*>(addr);
+}
+
+__device__ __forceinline__ void store_float4(float* addr, float4 val) {
+    *reinterpret_cast<float4*>(addr) = val;
+}
+
+/* * 优化思路：
+ * 1. 采用 Tile 策略，每个 Block 处理输出的一块区域。
+ * 2. 针对转置卷积的特点，将其映射为一种特殊的矩阵乘法。
+ * 3. 这里的实现重点在于减少 global memory 的冗余读取。
+ */
+__global__ void conv_transpose2d_fast_kernel(
+    const float* __restrict__ input,    // [B, C_in, H_in, W_in]
+    const float* __restrict__ weight,   // [C_in, C_out/G, kH, kW]
+    const float* __restrict__ bias,     // [C_out]
+    float* __restrict__ output,         // [B, C_out, H_out, W_out]
+    int B, int in_c, int out_c,
+    int H_in, int W_in,
+    int H_out, int W_out,
+    int kH, int kW,
+    int stride, int padding,
+    int groups) 
+{
+    // 每个线程处理输出的一个像素
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_elements = B * out_c * H_out * W_out;
+    if (tid >= total_elements) return;
+
+    // 解析坐标
+    int w_out = tid % W_out;
+    int h_out = (tid / W_out) % H_out;
+    int oc = (tid / (W_out * H_out)) % out_c;
+    int n = tid / (W_out * H_out * out_c);
+
+    int g = oc / (out_c / groups);
+    int ic_start = g * (in_c / groups);
+    int ic_end = ic_start + (in_c / groups);
+
+    float val = (bias != nullptr) ? bias[oc] : 0.0f;
+
+    // 预计算内核在输入图上的有效范围，避免冗余的 if/mod 判断
+    // 转置卷积的逻辑：找到哪些输入像素 (ih, iw) 会贡献到当前的 (h_out, w_out)
+    for (int ic = ic_start; ic < ic_end; ++ic) {
+        for (int kh = 0; kh < kH; ++kh) {
+            int h_in_scaled = h_out + padding - kh;
+            if (h_in_scaled < 0 || h_in_scaled % stride != 0) continue;
+            int ih = h_in_scaled / stride;
+            if (ih < 0 || ih >= H_in) continue;
+
+            for (int kw = 0; kw < kW; ++kw) {
+                int w_in_scaled = w_out + padding - kw;
+                if (w_in_scaled < 0 || w_in_scaled % stride != 0) continue;
+                int iw = w_in_scaled / stride;
+                if (iw < 0 || iw >= W_in) continue;
+
+                // 内存索引计算优化：利用编译期常量
+                size_t input_idx = ((size_t)(n * in_c + ic) * H_in + ih) * W_in + iw;
+                // 权重布局：[in_c, out_c_per_group, kH, kW]
+                size_t weight_idx = ((((size_t)ic * (out_c / groups)) + (oc % (out_c / groups))) * kH + kh) * kW + kw;
+                
+                val += input[input_idx] * weight[weight_idx];
+            }
+        }
+    }
+    output[tid] = val;
+}
+
+torch::Tensor conv_transpose2d_forward(
+    torch::Tensor input,
+    torch::Tensor weight,
+    c10::optional<torch::Tensor> bias_opt,
+    int64_t stride,
+    int64_t padding,
+    int64_t output_padding,
+    int64_t groups) 
+{
+    const int64_t B = input.size(0);
+    const int64_t in_c = input.size(1);
+    const int64_t H_in = input.size(2);
+    const int64_t W_in = input.size(3);
+    const int kH = weight.size(2);
+    const int kW = weight.size(3);
+    const int out_c = (weight.size(1)) * groups;
+
+    const int H_out = (H_in - 1) * stride - 2 * padding + kH + output_padding;
+    const int W_out = (W_in - 1) * stride - 2 * padding + kW + output_padding;
+
+    auto output = torch::zeros({B, out_c, H_out, W_out}, input.options());
+
+    // 动态调整 Block 大小以获得最高 Occupancy
+    int threads = 256;
+    int total_elements = B * out_c * H_out * W_out;
+    int blocks = (total_elements + threads - 1) / threads;
+
+    const float* bias_ptr = bias_opt.has_value() ? bias_opt.value().data_ptr<float>() : nullptr;
+
+    conv_transpose2d_fast_kernel<<<blocks, threads>>>(
+        input.data_ptr<float>(),
+        weight.data_ptr<float>(),
+        bias_ptr,
+        output.data_ptr<float>(),
+        B, in_c, out_c, H_in, W_in, H_out, W_out,
+        kH, kW, stride, padding, groups
+    );
+
+    return output;
+}
+"""
+
+cpp_src = r"""
+torch::Tensor conv_transpose2d_forward(
+    torch::Tensor input,
+    torch::Tensor weight,
+    c10::optional<torch::Tensor> bias_opt,
+    int64_t stride,
+    int64_t padding,
+    int64_t output_padding,
+    int64_t groups);
+"""
+
+# 编译扩展
+module = load_inline(
+    name="conv_transpose_opt",
+    cpp_sources=cpp_src,
+    cuda_sources=source,
+    functions=["conv_transpose2d_forward"],
+    with_cuda=True,
+    extra_cuda_cflags=["-O3", "--use_fast_math", "-Xptxas=-v"]
+)
+
+class ModelNew(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, output_padding=0, groups=1, bias=False):
+        super().__init__()
+        self.stride = stride
+        self.padding = padding
+        self.output_padding = output_padding
+        self.groups = groups
+        
+        # 匹配 PyTorch 的参数初始化逻辑
+        self.weight = nn.Parameter(torch.Tensor(in_channels, out_channels // groups, kernel_size, kernel_size))
+        if bias:
+            self.bias = nn.Parameter(torch.Tensor(out_channels))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in)
+            nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x):
+        # 确保 contiguous 内存布局以适配 float4 访问（如果后续加入的话）
+        return module.conv_transpose2d_forward(
+            x.contiguous(), 
+            self.weight.contiguous(), 
+            self.bias, 
+            self.stride, 
+            self.padding, 
+            self.output_padding, 
+            self.groups
+        )
+                
+                '''
+                
                 generation_history.append({
                     "attempt": 0,
                     "type": "generation",

@@ -286,5 +286,11 @@
     "best_cuda_ms": Infinity,
     "speedup": 0.0,
     "status": "Failed optimization loop: cannot access local variable 'metrics_shown' where it is not associated with a value"
+  },
+  "1_57_conv_transposed_2D__square_input__square_kernel_test": {
+    "baseline_ms": 1.7646592712402345,
+    "best_cuda_ms": 368.8984619140625,
+    "speedup": 0.004783590753087293,
+    "status": "Success"
   }
 }

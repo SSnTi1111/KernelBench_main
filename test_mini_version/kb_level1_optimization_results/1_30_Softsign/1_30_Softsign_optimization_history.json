@@ -3,10 +3,18 @@
     "round": 0,
     "goal": "Baseline",
     "status": "Success",
-    "time_ms": 12.201471710205078,
+    "time_ms": 9.516031646728516,
     "ptxas_metrics": {
-      "softsign_kernel<Half>": {
+      "softsign_kernel<BFloat16>": {
         "registers": 21,
+        "spill_bytes": 0,
+        "cmem_bytes": 376,
+        "smem_bytes": 0,
+        "type": "BFloat16",
+        "width": "Scalar"
+      },
+      "softsign_kernel<Half>": {
+        "registers": 23,
         "spill_bytes": 0,
         "cmem_bytes": 376,
         "smem_bytes": 0,
@@ -14,7 +22,7 @@
         "width": "Scalar"
       },
       "softsign_kernel<float>": {
-        "registers": 26,
+        "registers": 21,
         "spill_bytes": 0,
         "cmem_bytes": 376,
         "smem_bytes": 0,
@@ -22,7 +30,7 @@
         "width": "Scalar"
       },
       "softsign_kernel<double>": {
-        "registers": 37,
+        "registers": 28,
         "spill_bytes": 0,
         "cmem_bytes": 376,
         "smem_bytes": 0,
@@ -31,42 +39,282 @@
       }
     },
     "all_ncu_metrics": {
-      "DRAMFrequency": 1505350905.01,
-      "SMFrequency": 1060237785.14,
-      "ElapsedCycles": 12947055.0,
-      "MemoryThroughput": 54.7,
-      "DRAMThroughput": 54.7,
-      "Duration": 12211168.0,
-      "L1TEXCacheThroughput": 17.08,
-      "L2CacheThroughput": 56.05,
-      "SMActiveCycles": 12943498.17,
-      "ComputeSMThroughput": 75.59,
+      "DRAMFrequency": 1509222331.65,
+      "SMFrequency": 1062951007.02,
+      "ElapsedCycles": 10016492.0,
+      "MemoryThroughput": 70.71,
+      "DRAMThroughput": 70.71,
+      "Duration": 9423040.0,
+      "L1TEXCacheThroughput": 22.79,
+      "L2CacheThroughput": 70.77,
+      "SMActiveCycles": 10007764.59,
+      "ComputeSMThroughput": 31.54,
       "BlockSize": 256.0,
-      "GridSize": 6291456.0,
+      "GridSize": 65535.0,
+      "RegistersPerThread": 21.0,
+      "SharedMemoryConfigurationSize": 32768.0,
+      "DriverSharedMemoryPerBlock": 1024.0,
+      "DynamicSharedMemoryPerBlock": 0.0,
+      "StaticSharedMemoryPerBlock": 0.0,
+      "Threads": 16776960.0,
+      "WavesPerSM": 75.85,
+      "BlockLimitSM": 32.0,
+      "BlockLimitRegisters": 10.0,
+      "BlockLimitSharedMem": 32.0,
+      "BlockLimitWarps": 8.0,
+      "TheoreticalActiveWarpsperSM": 64.0,
+      "TheoreticalOccupancy": 100.0,
+      "AchievedOccupancy": 98.19,
+      "AchievedActiveWarpsPerSM": 62.84
+    },
+    "selected_ncu_metrics": [],
+    "details": "Initial baseline measurement",
+    "code": "import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r'''\n#include <torch/extension.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\ntemplate <typename scalar_t>\n__global__ void softsign_kernel(const scalar_t* __restrict__ x,\n                                scalar_t* __restrict__ y,\n                                const size_t N) {\n    size_t idx     = blockIdx.x * blockDim.x + threadIdx.x;\n    size_t stride  = blockDim.x * gridDim.x;\n\n    for (size_t i = idx; i < N; i += stride) {\n        scalar_t val    = x[i];\n        scalar_t absval = val >= scalar_t(0) ? val : -val;\n        y[i]            = val / (scalar_t(1) + absval);\n    }\n}\n\ntorch::Tensor softsign_cuda(torch::Tensor x) {\n    TORCH_CHECK(x.is_cuda(),  \"Input tensor must reside on CUDA device\");\n    TORCH_CHECK(x.is_contiguous(), \"Input tensor must be contiguous\");\n    TORCH_CHECK(x.layout() == torch::kStrided, \"Only strided tensors supported\");\n\n    auto out = torch::empty_like(x);\n    const size_t N = x.numel();\n\n    const int threads = 256;\n    int blocks = std::min<int>((N + threads - 1) / threads, 65535);\n\n    AT_DISPATCH_FLOATING_TYPES_AND2(torch::kHalf, torch::kBFloat16,\n                                    x.scalar_type(), \"softsign_cuda_launch\", ([&] {\n        softsign_kernel<scalar_t><<<blocks, threads>>>(\n            x.data_ptr<scalar_t>(),\n            out.data_ptr<scalar_t>(),\n            N);\n    }));\n\n    cudaError_t err = cudaGetLastError();\n    if (err != cudaSuccess) {\n        TORCH_CHECK(false, \"softsign_kernel launch failed with error: \", cudaGetErrorString(err));\n    }\n    return out;\n}\n'''\n\ncpp_src = r'''\ntorch::Tensor softsign_cuda(torch::Tensor x);\n'''\n\nsoftsign = load_inline(\n    name         = 'softsign',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = ['softsign_cuda'],\n    with_cuda    = True,\n    verbose      = True,\n    extra_cuda_cflags=['-O2', '--ptxas-options=-v'],\n    extra_cflags=['-O2'],\n)\n\nclass ModelNew(nn.Module):\n    def __init__(self):\n        super().__init__()\n        self.softmax_mod = softsign\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.softmax_mod.softsign_cuda(x)"
+  },
+  {
+    "round": 1,
+    "goal": "Reduce global memory traffic overhead by vectorizing memory accesses and processing multiple elements per thread (e.g., use aligned wide loads/stores such as float4/half2 or 128-bit loads and handle N_per_thread > 1 via strip-mining) to increase bytes-per-transaction efficiency and relieve the DRAM bandwidth bottleneck.",
+    "bottleneck_analysis": "High global memory bandwidth usage is the root bottleneck. Observed MemoryThroughput/DRAMThroughput = 70.71% with ComputeSMThroughput only 31.54% and AchievedOccupancy = 98.19% indicates the kernel is memory-bound (streaming loads/stores dominate time). PTXAS shows no spills and low registers (21), so registers/occupancy are not limiting; L2 throughput (~70.77) matching DRAM indicates little cache reuse. The elementwise softsign kernel performs one read and one write per element with no data reuse, producing high DRAM traffic and low arithmetic intensity.",
+    "detailed_plan": "1. Decide a fixed \u201cvector width\u201d of 128-bits (16 bytes) for bandwidth-efficient global transactions.  \n   \u2022 float  (4 bytes)  \u2192 4 values (float4)  \n   \u2022 __half / __nv_bfloat16 (2 bytes) \u2192 8 values (uint4 load, reinterpret, then treat each 32-bit word as __half2)  \n   \u2022 double (8 bytes) \u2192 2 values (double2)  \n   NOTE: We will \u201cspecialise\u201d the kernel for each scalar_t with a constexpr VecSize and an alias VecT (e.g. float4, double2, uint4).\n\n2. Add a compile-time helper:\n   template<typename T> struct VecTraits;\n   template<> struct VecTraits<float>  { using VecT=float4;  static constexpr int kValues=4; };\n   template<> struct VecTraits<double> { using VecT=double2; static constexpr int kValues=2; };\n   template<> struct VecTraits<__half> { using VecT=uint4;   static constexpr int kValues=8; };\n   template<> struct VecTraits<__nv_bfloat16> { using VecT=uint4; static constexpr int kValues=8; };\n\n3. Kernel launch parameters remain (256, blocks) to keep high occupancy.  \n   Each thread will iterate over \u201cvector elements\u201d:\n      vecIdx = blockIdx.x*blockDim.x + threadIdx.x;\n      vecStride = gridDim.x*blockDim.x;\n   Global element index for scalar i = vecIdx*VecSize + lane (0\u2026VecSize-1).\n\n4. Inside the loop:  \n   4.1. Cast input/output pointers to VecT* with `reinterpret_cast`.  \n   4.2. Perform a single 128-bit LDG/LDS instruction (`*reinterpret_cast<const VecT*>(x)`) and store it in a register `in_vec`.  \n   4.3. Decompose the vector into individual scalar_t registers (`#pragma unroll`). For float/double this is trivial via dot notation (.x, .y \u2026). For half/BF16 use `__half2` helpers:  \n        \u2022 Convert every pair via `__half2 val = __halves2half2(in_vec.word[i]);` then compute softsign on the two halves using habs, hadd, hdiv intrinsics.  \n   4.4. Re-pack the results into a VecT `out_vec` and write with a single 128-bit global store.\n\n5. Boundary handling: Total number of \u201cvector slots\u201d is N / VecSize. Threads whose `vecIdx` equals that count handle the remaining 0\u2013(VecSize-1) scalars with the old scalar code (compile-time branch).\n\n6. Synchronisation: None required because each thread works on distinct indices and we do not use shared memory.\n\n7. Keep register pressure in check:  \n   \u2022 We use at most (baseline registers + VecSize*4) \u2248 21 + 16 = 37 which is still <64, so no spills.  \n   \u2022 We do NOT introduce dynamic shared memory to keep smem_bytes = 0 (occupancy already 98 %).\n\n8. Expected metric movements:  \n   \u2022 dram__bytes_read.sum / dram__bytes_write.sum should drop \u2248 2\u00d7 (128-bit instead of four 32-bit or eight 16-bit transactions), therefore MemoryThroughput/DRAMThroughput \u2193.  \n   \u2022 L1TEX/L2 throughput will also fall accordingly.  \n   \u2022 ComputeSMThroughput should rise (>31 %) because arithmetic work per transaction is unchanged while memory time shrinks.  \n   \u2022 RegistersPerThread will rise modestly; AchievedOccupancy should stay >90 % (21\u2192 \u226440 regs).  \n\n9. History-check: No previous compilation errors; still include `cudaGetLastError()` check and keep AT_DISPATCH list unchanged to avoid template instantiation failures.\n\n10. Unit-test after compile with the same tensor sizes as baseline to verify bit-wise identical results (within fp-eps) and to ensure no mis-alignment crashes (use `TORCH_CHECK(reinterpret_cast<std::uintptr_t>(x.data_ptr()) % 16 == 0, \"tensor not 16-B aligned\")` for debug).\n\n11. If later profiling shows half/BF16 path does not compile efficiently, fall back to scalar loop for those types with `if constexpr(std::is_same<scalar_t,float>::value || std::is_same<scalar_t,double>::value)` gating, keeping functional correctness.",
+    "status": "Success (New Best)",
+    "time_ms": 7.689625549316406,
+    "ptxas_metrics": {
+      "softsign_vec_kernel<BFloat16>": {
+        "registers": 26,
+        "spill_bytes": 0,
+        "cmem_bytes": 376,
+        "smem_bytes": 0,
+        "type": "BFloat16",
+        "width": "?"
+      },
+      "softsign_vec_kernel<Half>": {
+        "registers": 34,
+        "spill_bytes": 0,
+        "cmem_bytes": 376,
+        "smem_bytes": 0,
+        "type": "Half(FP16)",
+        "width": "?"
+      },
+      "softsign_vec_kernel<double>": {
+        "registers": 34,
+        "spill_bytes": 0,
+        "cmem_bytes": 376,
+        "smem_bytes": 0,
+        "type": "double(FP64)",
+        "width": "?"
+      },
+      "softsign_vec_kernel<float>": {
+        "registers": 26,
+        "spill_bytes": 0,
+        "cmem_bytes": 376,
+        "smem_bytes": 0,
+        "type": "float(FP32)",
+        "width": "?"
+      }
+    },
+    "all_ncu_metrics": {
+      "DRAMFrequency": 1511436780.63,
+      "SMFrequency": 1064496059.95,
+      "ElapsedCycles": 8014690.0,
+      "MemoryThroughput": 88.35,
+      "DRAMThroughput": 88.35,
+      "Duration": 7528832.0,
+      "L1TEXCacheThroughput": 26.51,
+      "L2CacheThroughput": 83.4,
+      "SMActiveCycles": 8014360.16,
+      "ComputeSMThroughput": 23.26,
+      "BlockSize": 256.0,
+      "GridSize": 65535.0,
       "RegistersPerThread": 26.0,
       "SharedMemoryConfigurationSize": 32768.0,
       "DriverSharedMemoryPerBlock": 1024.0,
       "DynamicSharedMemoryPerBlock": 0.0,
       "StaticSharedMemoryPerBlock": 0.0,
-      "Threads": 1610612736.0,
-      "WavesPerSM": 7281.78,
+      "Threads": 16776960.0,
+      "WavesPerSM": 75.85,
       "BlockLimitSM": 32.0,
       "BlockLimitRegisters": 8.0,
       "BlockLimitSharedMem": 32.0,
       "BlockLimitWarps": 8.0,
       "TheoreticalActiveWarpsperSM": 64.0,
       "TheoreticalOccupancy": 100.0,
-      "AchievedOccupancy": 84.09,
-      "AchievedActiveWarpsPerSM": 53.82
+      "AchievedOccupancy": 97.04,
+      "AchievedActiveWarpsPerSM": 62.1
     },
-    "selected_ncu_metrics": [],
-    "details": "Initial baseline measurement",
-    "code": "import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r'''\n#include <torch/extension.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <math.h>\n\n////////////////////////////////////////////////////////////////\n// Element-wise Softsign: y = x / (1 + |x|)\n////////////////////////////////////////////////////////////////\ntemplate <typename scalar_t>\n__global__ void softsign_kernel(const scalar_t* __restrict__ x,\n                                scalar_t* __restrict__ y,\n                                const int64_t N)\n{\n    // flat thread id\n    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    int64_t stride = blockDim.x * gridDim.x;\n\n    for (; idx < N; idx += stride) {\n        scalar_t val = x[idx];\n        scalar_t denom = scalar_t(1.0) + abs(val);\n        y[idx] = val / denom;\n    }\n}\n\ntorch::Tensor softsign_forward(torch::Tensor x) {\n    TORCH_CHECK(x.is_cuda(), \"Input must be a CUDA tensor\");\n    TORCH_CHECK(x.scalar_type() == at::kFloat, \"Only float32 tensors are supported\");\n    \n    auto x_contig = x.contiguous();\n    auto y = torch::empty_like(x_contig);\n\n    const int64_t N = x_contig.numel();\n    const int threads = 256;\n    const int blocks = (N + threads - 1) / threads;\n\n    AT_DISPATCH_FLOATING_TYPES_AND_HALF(x_contig.scalar_type(), \"softsign_kernel_launch\", ([&] {\n        softsign_kernel<scalar_t><<<blocks, threads>>>(\n            x_contig.data_ptr<scalar_t>(),\n            y.data_ptr<scalar_t>(),\n            N);\n    }));\n    \n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, \"CUDA kernel failed : \", cudaGetErrorString(err));\n\n    return y;\n}\n'''\n\ncpp_src = r'''\ntorch::Tensor softsign_forward(torch::Tensor x);\n'''\n\nsoftsign_module = load_inline(\n    name='softsign_module',\n    cpp_sources=cpp_src,\n    cuda_sources=source,\n    functions=['softsign_forward'],\n    with_cuda=True,\n    verbose=True,\n    extra_cuda_cflags=['-O3', '--ptxas-options=-v']\n)\n\nclass ModelNew(nn.Module):\n    \"\"\"\n    CUDA-accelerated Softsign model.\n    Mirrors the original Model interface.\n    \"\"\"\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        # no parameters to initialize\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return softsign_module.softsign_forward(x)"
+    "selected_ncu_metrics": [
+      "DRAMThroughput",
+      "MemoryThroughput",
+      "L1TEXCacheThroughput",
+      "L2CacheThroughput",
+      "ElapsedCycles"
+    ],
+    "details": "Performance improved from 9.516 ms to 7.690 ms.",
+    "code": "import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r'''\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>     // getCurrentCUDAStream\n#include <cuda_fp16.h>\n#include <cuda_bf16.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\n// ===================================================================\n//  Vector-traits (tell the compiler which 128-bit vector type\n//  to use for a given scalar type)\n// -------------------------------------------------------------------\ntemplate <typename T> struct VecTraits;           // generic decl.\n\n// ---- float --------------------------------------------------------\ntemplate <> struct VecTraits<float>{\n    using VecT                   = float4;        // 4 \u00d7 32-bit = 128-bit\n    static constexpr int kValues = 4;\n};\n\n// ---- double -------------------------------------------------------\ntemplate <> struct VecTraits<double>{\n    using VecT                   = double2;       // 2 \u00d7 64-bit = 128-bit\n    static constexpr int kValues = 2;\n};\n\n// ---- half / bf16  --------------------------------------------------\ntemplate <> struct VecTraits<__half>{\n    using VecT                   = uint4;         // 4 \u00d7 32-bit = 128-bit\n    static constexpr int kValues = 8;             // 8 \u00d7 16-bit\n};\n\ntemplate <> struct VecTraits<__nv_bfloat16>{\n    using VecT                   = uint4;\n    static constexpr int kValues = 8;\n};\n\n// ===================================================================\n//  helpers\n// -------------------------------------------------------------------\n// bf16 \u2192 float  (CUDA 12 removed the old intrinsic)\n__device__ __forceinline__ float bf16_to_float(__nv_bfloat16 v){\n    uint32_t tmp = static_cast<uint32_t>(\n        *reinterpret_cast<const unsigned short*>(&v)) << 16;\n    return __uint_as_float(tmp);\n}\n\n// generic scalar-version\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t softsign_scalar(scalar_t v){\n    scalar_t absv = v >= scalar_t(0) ? v : -v;\n    return v / (scalar_t(1) + absv);\n}\n\n// ---- SPECIALISATIONS ---------------------------------------------\n// __nv_bfloat16 specialisation (comparison ops not available)\ntemplate <>\n__device__ __forceinline__ __nv_bfloat16\nsoftsign_scalar<__nv_bfloat16>(__nv_bfloat16 v){\n    float  fv  = bf16_to_float(v);\n    float  res = fv / (1.f + fabsf(fv));\n    return __float2bfloat16(res);\n}\n\n// __half specialisation (comparison ops not available)\ntemplate <>\n__device__ __forceinline__ __half\nsoftsign_scalar<__half>(__half v){\n    float fv  = __half2float(v);\n    float res = fv / (1.f + fabsf(fv));\n    return __float2half(res);\n}\n\n// ===================================================================\n//  main kernel (vectorised)\n// -------------------------------------------------------------------\ntemplate <typename scalar_t>\n__global__ void softsign_vec_kernel(const scalar_t* __restrict__ x,\n                                    scalar_t*       __restrict__ y,\n                                    const size_t N){\n    using Traits          = VecTraits<scalar_t>;\n    using VecT            = typename Traits::VecT;\n    constexpr int VecSize = Traits::kValues;\n\n    const VecT* __restrict__ x_vec = reinterpret_cast<const VecT*>(x);\n    VecT*       __restrict__ y_vec = reinterpret_cast<VecT*>(y);\n\n    const size_t vecElements = N / VecSize;\n    const size_t tid         = blockIdx.x * blockDim.x + threadIdx.x;\n    const size_t stride      = gridDim.x * blockDim.x;\n\n    // -------- vector loop ------------------------------------------\n    for (size_t vecIdx = tid; vecIdx < vecElements; vecIdx += stride){\n        VecT in_v  = x_vec[vecIdx];\n        VecT out_v;\n\n        // ---- float ------------------------------------------------\n        if constexpr (std::is_same<scalar_t,float>::value){\n            float*  in_f  = reinterpret_cast<float*>(&in_v);\n            float*  out_f = reinterpret_cast<float*>(&out_v);\n            #pragma unroll\n            for (int k=0;k<VecSize;++k){\n                float v  = in_f[k];\n                float av = fabsf(v);\n                out_f[k] = v / (1.f + av);\n            }\n        }\n        // ---- double -----------------------------------------------\n        else if constexpr (std::is_same<scalar_t,double>::value){\n            double* in_d  = reinterpret_cast<double*>(&in_v);\n            double* out_d = reinterpret_cast<double*>(&out_v);\n            #pragma unroll\n            for (int k=0;k<VecSize;++k){\n                double v  = in_d[k];\n                double av = fabs(v);\n                out_d[k]  = v / (1.0 + av);\n            }\n        }\n        // ---- half -------------------------------------------------\n        else if constexpr (std::is_same<scalar_t,__half>::value){\n            uint32_t* in_u  = reinterpret_cast<uint32_t*>(&in_v);\n            uint32_t* out_u = reinterpret_cast<uint32_t*>(&out_v);\n            #pragma unroll\n            for (int word=0; word<4; ++word){\n                __half2 pair  = *reinterpret_cast<__half2*>(&in_u[word]);\n                __half2 abs_p = __habs2(pair);\n                __half2 denom = __hadd2(abs_p, __half2half2(__float2half(1.f)));\n                __half2 res   = __h2div(pair, denom);\n                out_u[word]   = *reinterpret_cast<uint32_t*>(&res);\n            }\n        }\n        // ---- bf16 -------------------------------------------------\n        else{  // __nv_bfloat16\n            __nv_bfloat16* in_bf  = reinterpret_cast<__nv_bfloat16*>(&in_v);\n            __nv_bfloat16* out_bf = reinterpret_cast<__nv_bfloat16*>(&out_v);\n            #pragma unroll\n            for (int k=0;k<VecSize;++k){\n                out_bf[k] = softsign_scalar<__nv_bfloat16>(in_bf[k]);\n            }\n        }\n        y_vec[vecIdx] = out_v;\n    }\n\n    // -------- tail elements ----------------------------------------\n    const size_t base = vecElements * VecSize;\n    for (size_t idx = base + tid; idx < N; idx += stride){\n        scalar_t v = x[idx];\n        y[idx]     = softsign_scalar<scalar_t>(v);\n    }\n}\n\n// ===================================================================\n//  host API\n// -------------------------------------------------------------------\ntorch::Tensor softsign_cuda(torch::Tensor x){\n    auto out      = torch::empty_like(x);\n    const size_t N= x.numel();\n\n    const int threads = 256;\n    const int blocks  = std::min<int>((N + threads - 1) / threads, 65535);\n\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    // ----- dtype dispatch (manual) ---------------------------------\n    switch (x.scalar_type()){\n        case torch::kFloat:\n            softsign_vec_kernel<float><<<blocks,threads,0,stream>>>(\n                x.data_ptr<float>(),\n                out.data_ptr<float>(),\n                N);\n            break;\n\n        case torch::kDouble:\n            softsign_vec_kernel<double><<<blocks,threads,0,stream>>>(\n                x.data_ptr<double>(),\n                out.data_ptr<double>(),\n                N);\n            break;\n\n        case torch::kHalf:\n            softsign_vec_kernel<__half><<<blocks,threads,0,stream>>>(\n                reinterpret_cast<const __half*>(x.data_ptr<at::Half>()),\n                reinterpret_cast<__half*>(out.data_ptr<at::Half>()),\n                N);\n            break;\n\n        case torch::kBFloat16:\n            softsign_vec_kernel<__nv_bfloat16><<<blocks,threads,0,stream>>>(\n                reinterpret_cast<const __nv_bfloat16*>(x.data_ptr<at::BFloat16>()),\n                reinterpret_cast<__nv_bfloat16*>(out.data_ptr<at::BFloat16>()),\n                N);\n            break;\n\n        default:\n            AT_ERROR(\"softsign_cuda: unsupported dtype\");\n    }\n\n    return out;\n}\n'''\n\ncpp_src = r'''\ntorch::Tensor softsign_cuda(torch::Tensor x);\n'''\n\nsoftsign = load_inline(\n    name         = 'softsign_opt',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = ['softsign_cuda'],\n    with_cuda    = True,\n    verbose      = True,                          # keep verbose\n    extra_cuda_cflags=['-O3', '--ptxas-options=-v'],\n    extra_cflags=['-O3'],\n)\n\nclass ModelNew(nn.Module):\n    def __init__(self):\n        super().__init__()\n        self.mod = softsign\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.mod.softsign_cuda(x)"
   },
   {
-    "round": 1,
-    "goal": "Refactor the kernel so each thread processes multiple contiguous elements and use vectorized/coalesced bulk loads and stores (e.g., float4/float2 or unrolled blocks of K elements per thread) to increase effective memory transaction efficiency and arithmetic intensity, thereby reducing DRAM pressure.",
-    "bottleneck_analysis": "High DRAM/global-memory utilization is the bottleneck. AchievedOccupancy = 84.09% and RegistersPerThread = 26 with spill_bytes = 0 show no register pressure or occupancy limitation, while MemoryThroughput/DRAMThroughput = 54.7% (and L2 throughput ~56, L1 low ~17) indicates the kernel is streaming loads/stores and is bandwidth-bound \u2014 the element-wise softsign does one load + a few ALU ops + one store per element, giving very low arithmetic intensity and saturating DRAM throughput.",
+    "round": 2,
+    "goal": "Fuse the softsign kernel with its upstream producer and/or downstream consumer (operator fusion) so that intermediate element results are kept in registers/SM (no global-store followed by a global-load). This eliminates the extra DRAM write/read per element and directly cures the global memory bandwidth bottleneck.",
+    "bottleneck_analysis": "High ncu_dram__bytes_read.sum / DRAMThroughput = 88.35 (MemoryThroughput = 88.35) with low ComputeSMThroughput = 23.26 and AchievedOccupancy = 97.04 indicates a global memory bandwidth bottleneck. PTXAS shows registers \u224826\u201334 and spill_bytes = 0, so register pressure is not the issue; the kernel is memory-bound because it performs an inexpensive elementwise softsign (one read + one write per element) with no data reuse \u2014 even vectorized loads reduced transaction overhead but not total bytes transferred (L2 ~83.4 confirms streaming to DRAM).",
+    "detailed_plan": "1. Introduce an extensible \u201cfused-elementwise\u201d kernel skeleton  \n   \u2022 New template: `template<typename UpstreamOp, typename DownstreamOp, typename scalar_t>`  \n   \u2022 Kernel contract:  \n        read   : N values produced by `UpstreamOp::load()` (can be a single tensor or two/three tensors)  \n        compute: `DownstreamOp::apply(upstream_val)` \u2015 here the downstream op is Softsign  \n        write  : final result only once to DRAM  \n   \u2022 Keep the current 128-bit vectorised load/store pathway (reuse `VecTraits`).  \n\n2. Implement concrete functors  \n   a) `AddOp`                 \u2013 reads 2 tensors (a,b) \u2192 returns a+b  \n   b) `AddBiasOp`             \u2013 reads 1 tensor (a) + 1-element bias tensor[(i % C)]  \n   c) `IdentityOp`            \u2013 reads 1 tensor (current standalone case)  \n   d) `SoftsignOp`            \u2013 exactly the existing scalar/vector logic  \n   (all functors only use a handful of registers: 2 for pointers + 2-3 temporaries).  \n\n3. Compose kernels that matter for real models  \n   \u2022 `fused_add_softsign_kernel   <AddOp      , SoftsignOp>`  \u2192 y = softsign(a+b)  \n   \u2022 `fused_bias_softsign_kernel  <AddBiasOp  , SoftsignOp>`  \u2192 y = softsign(a+bias)  \n   \u2022 `softsign_only_kernel        <IdentityOp , SoftsignOp>`  \u2192 current behaviour (for regression test)  \n\n4. Launch-logic on the host side (keep backward compatibility)  \n   \u2022 Replace `softsign_cuda(x)` with an overload family accepting 1-to-3 tensors.  \n        \u2013 If only `x` is supplied           \u2192 launch `softsign_only_kernel` (exactly the old path).  \n        \u2013 If `x` and `y` are supplied       \u2192 treat `(x,y)` as add+softsign and launch fused kernel.  \n        \u2013 If `(x,bias)` matches C-dim shape \u2192 launch bias+softsign kernel.  \n   \u2022 This keeps the verification script unchanged while enabling fusion when the calling\n     PyTorch graph is later rewritten to provide the extra argument(s).  \n\n5. Memory-traffic calculation & metric expectations  \n   Stand-alone:            1 read + 1 write   \u2192 2 N bytes (same as today).  \n   Add + Softsign unfused: 2 reads + 2 writes \u2192 4 N bytes.  \n   Fused kernel:           2 reads + 1 write  \u2192 3 N bytes (25 % DRAM traffic reduction versus unfused).  \n   Therefore expect:  \n        \u2022 `ncu_dram__bytes_read.sum` unchanged for stand-alone call (regression safe).  \n        \u2022 When fused path is used,   DRAMThroughput should fall \u224825 %,  \n          ComputeSMThroughput will grow because arithmetic/byte ratio increases.  \n\n6. Grid/block sizing stays identical (256 threads, variable grid).  \n   \u2022 Register budget: keep per-thread \u226432 by re-using the same three temporaries,  \n     verified with `static_assert((kFlags & FUNCTOR_NEEDS_EXTRA_REGS)==0);`.  \n   \u2022 No shared memory \u2192 AchievedOccupancy remains ~97 %.  \n\n7. Code-safety & historical error avoidance  \n   \u2022 All functors live in the same translation unit, avoid ODR violations.  \n   \u2022 No dynamic shared-mem \u2013 sidesteps earlier \u201csmem size > 0\u201d build errors.  \n   \u2022 Keep all `__device__ __forceinline__` helpers exactly as in the working kernel;  \n     only the top-level kernel name changes, ensuring the previous compilation\n     mistakes (\u201cunknown identifier thread_idx\u201d) cannot re-appear.  \n\n8. Validation path  \n   \u2022 Unit-test 1 (original): `y = softsign_cuda(x)` \u2192 bit-wise identical to old kernel.  \n   \u2022 Unit-test 2 (fusion):   `y = softsign_cuda(x, z)` where `z` is another tensor  \n                             \u2192 verify `torch.allclose(y, torch.nn.functional.softsign(x+z))`.  \n\n9. Performance sanity-check script (optional but recommended)  \n   \u2013 run `nv-nsight-cu-cli` on both stand-alone and fused calls,  \n     print `dram__bytes_read.sum`, `dram__bytes_write.sum`, and kernel runtime;  \n     assert fused kernel cuts DRAM bytes by \u226520 % and wall-time by \u226515 %.  \n\n10. Documentation / user guidance  \n    \u2022 Update README so users can opt-in to fusion by simply passing the\n      additional tensor(s) when calling the Python wrapper.",
+    "status": "Success (New Best)",
+    "time_ms": 7.689113616943359,
+    "ptxas_metrics": {
+      "softsign_vec_kernel_fused<BFloat16>": {
+        "registers": 26,
+        "spill_bytes": 0,
+        "cmem_bytes": 384,
+        "smem_bytes": 0,
+        "type": "BFloat16",
+        "width": "?"
+      },
+      "softsign_vec_kernel_fused<Half>": {
+        "registers": 34,
+        "spill_bytes": 0,
+        "cmem_bytes": 384,
+        "smem_bytes": 0,
+        "type": "Half(FP16)",
+        "width": "?"
+      },
+      "softsign_vec_kernel_fused<double>": {
+        "registers": 34,
+        "spill_bytes": 0,
+        "cmem_bytes": 384,
+        "smem_bytes": 0,
+        "type": "double(FP64)",
+        "width": "?"
+      },
+      "softsign_vec_kernel_fused<float>": {
+        "registers": 26,
+        "spill_bytes": 0,
+        "cmem_bytes": 384,
+        "smem_bytes": 0,
+        "type": "float(FP32)",
+        "width": "?"
+      }
+    },
+    "all_ncu_metrics": {
+      "DRAMFrequency": 1509525144.41,
+      "SMFrequency": 1063151496.74,
+      "ElapsedCycles": 8010140.0,
+      "MemoryThroughput": 88.4,
+      "DRAMThroughput": 88.4,
+      "Duration": 7534080.0,
+      "L1TEXCacheThroughput": 26.53,
+      "L2CacheThroughput": 83.45,
+      "SMActiveCycles": 8007631.99,
+      "ComputeSMThroughput": 23.27,
+      "BlockSize": 256.0,
+      "GridSize": 65535.0,
+      "RegistersPerThread": 26.0,
+      "SharedMemoryConfigurationSize": 32768.0,
+      "DriverSharedMemoryPerBlock": 1024.0,
+      "DynamicSharedMemoryPerBlock": 0.0,
+      "StaticSharedMemoryPerBlock": 0.0,
+      "Threads": 16776960.0,
+      "WavesPerSM": 75.85,
+      "BlockLimitSM": 32.0,
+      "BlockLimitRegisters": 8.0,
+      "BlockLimitSharedMem": 32.0,
+      "BlockLimitWarps": 8.0,
+      "TheoreticalActiveWarpsperSM": 64.0,
+      "TheoreticalOccupancy": 100.0,
+      "AchievedOccupancy": 97.05,
+      "AchievedActiveWarpsPerSM": 62.11
+    },
+    "selected_ncu_metrics": [
+      "MemoryThroughput",
+      "DRAMThroughput",
+      "L2CacheThroughput",
+      "DRAMFrequency",
+      "ElapsedCycles"
+    ],
+    "details": "Performance improved from 7.690 ms to 7.689 ms.",
+    "code": "import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\n# CUDA/C++ source --------------------------------------------------------------\nsource = r'''\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda_fp16.h>\n#include <cuda_bf16.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <type_traits>\n#include <cstdint>\n\n// ================================================================\n// 128-bit vector traits\n// ------------------------------------------------\ntemplate<typename T> struct VecTraits;\n\ntemplate<> struct VecTraits<float>         { using VecT = float4;  static constexpr int kValues = 4; };\ntemplate<> struct VecTraits<double>        { using VecT = double2; static constexpr int kValues = 2; };\ntemplate<> struct VecTraits<__half>        { using VecT = uint4;   static constexpr int kValues = 8; };\ntemplate<> struct VecTraits<__nv_bfloat16> { using VecT = uint4;   static constexpr int kValues = 8; };\n\n// ================================================================\n// helpers\n// ------------------------------------------------\n__device__ __forceinline__ float bf16_to_float(__nv_bfloat16 v){\n    uint32_t tmp = static_cast<uint32_t>(\n        *reinterpret_cast<const unsigned short*>(&v)) << 16;\n    return __uint_as_float(tmp);\n}\n\ntemplate<typename scalar_t>\n__device__ __forceinline__ scalar_t softsign_scalar(scalar_t v){\n    scalar_t av = v >= scalar_t(0) ? v : -v;\n    return v / (scalar_t(1) + av);\n}\n\ntemplate<>\n__device__ __forceinline__ __half softsign_scalar(__half v){\n    float fv  = __half2float(v);\n    float res = fv / (1.f + fabsf(fv));\n    return __float2half(res);\n}\ntemplate<>\n__device__ __forceinline__ __nv_bfloat16 softsign_scalar(__nv_bfloat16 v){\n    float fv  = bf16_to_float(v);\n    float res = fv / (1.f + fabsf(fv));\n    return __float2bfloat16(res);\n}\n\n// ================================================================\n//  main kernel: can optionally add a 2nd tensor before Softsign\n// ------------------------------------------------\ntemplate<typename scalar_t, bool DoAdd>\n__global__ void softsign_vec_kernel_fused(const scalar_t* __restrict__ a,\n                                          const scalar_t* __restrict__ b,   // can be nullptr\n                                          scalar_t*       __restrict__ y,\n                                          const size_t N){\n    using Traits          = VecTraits<scalar_t>;\n    using VecT            = typename Traits::VecT;\n    constexpr int VecSize = Traits::kValues;\n\n    const VecT* __restrict__ a_vec = reinterpret_cast<const VecT*>(a);\n    const VecT* __restrict__ b_vec = reinterpret_cast<const VecT*>(b);\n    VecT*       __restrict__ y_vec = reinterpret_cast<VecT*>(y);\n\n    const size_t vec_elems = N / VecSize;\n    const size_t tid       = blockIdx.x * blockDim.x + threadIdx.x;\n    const size_t stride    = gridDim.x * blockDim.x;\n\n    // ---------------- Vector loop -----------------------------\n    for (size_t idx = tid; idx < vec_elems; idx += stride){\n        VecT inA  = a_vec[idx];\n        VecT sumV;\n\n        if constexpr (DoAdd){\n            VecT inB = b_vec[idx];\n            // ---- float --------------------------------------\n            if constexpr (std::is_same<scalar_t,float>::value){\n                float*  ap = reinterpret_cast<float*>(&inA);\n                float*  bp = reinterpret_cast<float*>(&inB);\n                float*  sp = reinterpret_cast<float*>(&sumV);\n                #pragma unroll\n                for (int k=0;k<VecSize;++k) sp[k] = ap[k] + bp[k];\n            }\n            // ---- double -------------------------------------\n            else if constexpr (std::is_same<scalar_t,double>::value){\n                double* ap = reinterpret_cast<double*>(&inA);\n                double* bp = reinterpret_cast<double*>(&inB);\n                double* sp = reinterpret_cast<double*>(&sumV);\n                #pragma unroll\n                for (int k=0;k<VecSize;++k) sp[k] = ap[k] + bp[k];\n            }\n            // ---- half ---------------------------------------\n            else if constexpr (std::is_same<scalar_t,__half>::value){\n                uint32_t* ap = reinterpret_cast<uint32_t*>(&inA);\n                uint32_t* bp = reinterpret_cast<uint32_t*>(&inB);\n                uint32_t* sp = reinterpret_cast<uint32_t*>(&sumV);\n                #pragma unroll\n                for (int word=0; word<4; ++word){\n                    __half2 va = *reinterpret_cast<__half2*>(&ap[word]);\n                    __half2 vb = *reinterpret_cast<__half2*>(&bp[word]);\n                    __half2 vs = __hadd2(va, vb);\n                    sp[word]   = *reinterpret_cast<uint32_t*>(&vs);\n                }\n            }\n            // ---- bf16 ---------------------------------------\n            else{\n                __nv_bfloat16* ap = reinterpret_cast<__nv_bfloat16*>(&inA);\n                __nv_bfloat16* bp = reinterpret_cast<__nv_bfloat16*>(&inB);\n                __nv_bfloat16* sp = reinterpret_cast<__nv_bfloat16*>(&sumV);\n                #pragma unroll\n                for (int k=0;k<VecSize;++k) sp[k] = __hadd(ap[k], bp[k]); // __hadd works for bf16 too\n            }\n        }\n\n        VecT outV;\n\n        // Apply softsign (vectorised)\n        VecT* src = nullptr;\n        if constexpr (DoAdd) src = &sumV;\n        else                 src = &inA;\n\n        // ---- float ------------------------------------------\n        if constexpr (std::is_same<scalar_t,float>::value){\n            float*  in  = reinterpret_cast<float*>(src);\n            float*  out = reinterpret_cast<float*>(&outV);\n            #pragma unroll\n            for (int k=0;k<VecSize;++k){\n                float v  = in[k];\n                float av = fabsf(v);\n                out[k]   = v / (1.f + av);\n            }\n        }\n        // ---- double -----------------------------------------\n        else if constexpr (std::is_same<scalar_t,double>::value){\n            double* in  = reinterpret_cast<double*>(src);\n            double* out = reinterpret_cast<double*>(&outV);\n            #pragma unroll\n            for (int k=0;k<VecSize;++k){\n                double v  = in[k];\n                double av = fabs(v);\n                out[k]    = v / (1.0 + av);\n            }\n        }\n        // ---- half -------------------------------------------\n        else if constexpr (std::is_same<scalar_t,__half>::value){\n            uint32_t* in  = reinterpret_cast<uint32_t*>(src);\n            uint32_t* out = reinterpret_cast<uint32_t*>(&outV);\n            #pragma unroll\n            for (int word=0; word<4; ++word){\n                __half2 val    = *reinterpret_cast<__half2*>(&in[word]);\n                __half2 abs_v  = __habs2(val);\n                __half2 denom  = __hadd2(abs_v, __half2half2(__float2half(1.f)));\n                __half2 res    = __h2div(val, denom);\n                out[word]      = *reinterpret_cast<uint32_t*>(&res);\n            }\n        }\n        // ---- bf16 -------------------------------------------\n        else{\n            __nv_bfloat16* in  = reinterpret_cast<__nv_bfloat16*>(src);\n            __nv_bfloat16* out = reinterpret_cast<__nv_bfloat16*>(&outV);\n            #pragma unroll\n            for (int k=0;k<VecSize;++k){\n                out[k] = softsign_scalar<__nv_bfloat16>(in[k]);\n            }\n        }\n        y_vec[idx] = outV;\n    }\n\n    // ---------------- Tail elements -------------------------\n    const size_t base = vec_elems * VecSize;\n    for (size_t i = base + tid; i < N; i += stride){\n        scalar_t val = a[i];\n        if constexpr (DoAdd){\n            // Handle addition for different dtypes\n            if constexpr (std::is_same<scalar_t,float>::value ||\n                          std::is_same<scalar_t,double>::value){\n                val = val + b[i];\n            }\n            else if constexpr (std::is_same<scalar_t,__half>::value){\n                val = __hadd(val, b[i]);\n            }\n            else{ // bf16\n                val = __hadd(val, b[i]);   // __hadd works for bf16 too\n            }\n        }\n        y[i] = softsign_scalar<scalar_t>(val);\n    }\n}\n\n// ================================================================\n//  Host API\n// ------------------------------------------------\nnamespace {\n\n// NOTE:\n// Using data_ptr<__half>() or data_ptr<__nv_bfloat16>() requires\n// PyTorch to provide explicit instantiations for those template\n// arguments.  Older / some builds of PyTorch do not export them,\n// leading to an \"undefined symbol\" linker error.  To avoid that,\n// we fetch an untyped (void*) pointer via data_ptr() and cast it\n// to the desired CUDA scalar type.\n\n// ----------------------------------------------------------------\ntemplate<typename scalar_t>\nvoid launch_softsign(torch::Tensor a, torch::Tensor out){\n    const size_t N = a.numel();\n    constexpr int threads = 256;\n    const int blocks      = std::min<int>((N + threads - 1) / threads, 65535);\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    softsign_vec_kernel_fused<scalar_t,false><<<blocks,threads,0,stream>>>(\n        reinterpret_cast<const scalar_t*>(a.data_ptr()),\n        nullptr,\n        reinterpret_cast<scalar_t*>(out.data_ptr()),\n        N);\n}\n\ntemplate<typename scalar_t>\nvoid launch_softsign_add(torch::Tensor a, torch::Tensor b, torch::Tensor out){\n    const size_t N = a.numel();\n    constexpr int threads = 256;\n    const int blocks      = std::min<int>((N + threads - 1) / threads, 65535);\n    auto stream = at::cuda::getCurrentCUDAStream();\n\n    softsign_vec_kernel_fused<scalar_t,true><<<blocks,threads,0,stream>>>(\n        reinterpret_cast<const scalar_t*>(a.data_ptr()),\n        reinterpret_cast<const scalar_t*>(b.data_ptr()),\n        reinterpret_cast<scalar_t*>(out.data_ptr()),\n        N);\n}\n\n} // anonymous namespace\n\n// single-input variant (compat)\ntorch::Tensor softsign_cuda(torch::Tensor x){\n    auto out = torch::empty_like(x);\n\n    switch (x.scalar_type()){\n        case torch::kFloat:    launch_softsign<float>(x,out);                      break;\n        case torch::kDouble:   launch_softsign<double>(x,out);                     break;\n        case torch::kHalf:     launch_softsign<__half>(x,out);                     break;\n        case torch::kBFloat16: launch_softsign<__nv_bfloat16>(x,out);              break;\n        default: AT_ERROR(\"softsign_cuda: unsupported dtype\");\n    }\n    return out;\n}\n\n// fused add + softsign  (optional)\ntorch::Tensor softsign_add_cuda(torch::Tensor a, torch::Tensor b){\n    TORCH_CHECK(a.sizes() == b.sizes(), \"Tensors must have the same shape\");\n    auto out = torch::empty_like(a);\n\n    switch (a.scalar_type()){\n        case torch::kFloat:    launch_softsign_add<float>(a,b,out);                break;\n        case torch::kDouble:   launch_softsign_add<double>(a,b,out);               break;\n        case torch::kHalf:     launch_softsign_add<__half>(a,b,out);               break;\n        case torch::kBFloat16: launch_softsign_add<__nv_bfloat16>(a,b,out);        break;\n        default: AT_ERROR(\"softsign_add_cuda: unsupported dtype\");\n    }\n    return out;\n}\n'''\n\n# Tiny C++ declaration stub ----------------------------------------------------\ncpp_src = r'''\ntorch::Tensor softsign_cuda(torch::Tensor x);\ntorch::Tensor softsign_add_cuda(torch::Tensor a, torch::Tensor b);\n'''\n\n# Build / load extension -------------------------------------------------------\nsoftsign_mod = load_inline(\n    name         = 'softsign_opt_fused',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = ['softsign_cuda', 'softsign_add_cuda'],\n    with_cuda    = True,\n    verbose      = True,                          # <-- keep verbose build\n    extra_cuda_cflags=['-O3', '--ptxas-options=-v', '-std=c++17'],  # <-- ptxas flags\n    extra_cflags=['-O3', '-std=c++17'],\n)\n\n# ----------------------------------------------------------------------------- \n# PyTorch Module wrapper\n# -----------------------------------------------------------------------------\nclass ModelNew(nn.Module):\n    def __init__(self):\n        super().__init__()\n        self.mod = softsign_mod\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.mod.softsign_cuda(x)"
+  },
+  {
+    "round": 3,
+    "goal": "Implement block-level tiling with shared-memory staging (double-buffering): have each block load a contiguous tile of many vectors into shared memory via fully coalesced wide loads, compute softsign for multiple elements per thread from the shared tile (keeping intermediates in registers/shared memory), then write the tile back using fully coalesced wide stores. This will reduce the number of DRAM transactions and increase the bytes-per-transaction/coalescing efficiency, directly lowering DRAM throughput and curing the memory-bandwidth bottleneck.",
+    "bottleneck_analysis": "High ncu_dram__bytes_read / MemoryThroughput = 88.4 (NCU MemoryThroughput DRAMThroughput = 88.4, L2CacheThroughput = 83.45, ComputeSMThroughput = 23.27, AchievedOccupancy = 97.05). PTXAS shows no spills (spill_bytes = 0) and modest registers (26\u201334), so register pressure and occupancy are not the issue. These metrics indicate a global memory bandwidth bottleneck: the elementwise softsign performs very few FLOPs per loaded byte (one read \u00b1 one add and one write per element) so the kernel is saturating DRAM with streaming loads/stores and has little temporal locality to exploit.",
+    "detailed_plan": "1. Choose a fixed per-block tile shape that is small enough to keep occupancy high yet large enough to amortise the latency of a bulk global transaction.  \n   \u2022 Let THREADS_PER_BLOCK = 256 (unchanged).  \n   \u2022 Let VALUES_PER_THREAD = 4 (so each block works on 1024 elements).  \n   \u2022 Total shared buffer needed for one tile = 1024 \u00d7 sizeof(scalar_t).\u2003Worst case (double) = 8 KiB.  \n   \u2022 Allocate TWO such buffers (double-buffering) \u2192 \u2264 16 KiB, well inside the 48 KiB limit, so occupancy (currently 97 %) will stay > 75 %.\n\n2. Add a statically-sized shared-memory array that is typed on the running scalar_t and double-buffered:  \n   __shared__ scalar_t s_mem[2][THREADS_PER_BLOCK * VALUES_PER_THREAD];\n\n3. Strip-mine the global problem: each loop iteration handles one tile. Compute the global start index for the tile:  \n   tileBase = (blockIdx.x * THREADS_PER_BLOCK * VALUES_PER_THREAD) + iter * GRID_STRIDE;  \n   where GRID_STRIDE = gridDim.x * THREADS_PER_BLOCK * VALUES_PER_THREAD.\n\n4. (Load phase \u2013 buffer id = iter & 1)  \n   Each thread reads one contiguous VecT (128-bit) from global memory, writes it into its lane of the selected shared buffer (four scalars). This produces perfectly coalesced, 128-bit global loads exactly as in the current kernel but now only 1 load/1024 elements (per block) instead of 1 load/element.  \n   After the copy: __syncthreads().\n\n5. (Compute phase)  \n   All threads now read their four scalars from shared memory, apply softsign in registers exactly as in the current vectorised loop. Store the results back into the SAME shared buffer location (overwriting the input). No extra registers, no spills.\n\n6. __syncthreads() again to guarantee writes are visible to every warp.\n\n7. (Store phase)  \n   Reinterpret the four scalars as a VecT and issue a single 128-bit, fully-coalesced global store per thread from shared memory to y[tileBase + threadLocalOffset + k].\n\n8. Advance iter and toggle the double buffer (buffer_id ^= 1).  \n   Optionally, on Ampere+ parts, launch the load for the *next* tile with cp.async (or ldmatrix.async for fp16/bf16) before starting the compute of the current tile. After the first iteration the pipeline becomes:  \n      \u2013 issue cp.async into s_mem[next]  \n      \u2013 compute softsign on s_mem[cur]  \n      \u2013 commit global stores from s_mem[cur]  \n      \u2013 cp.async.commit; cp.async.wait_all(); swap buffers  \n   This overlaps global memory latency with arithmetic, reducing dram__throughput utilisation. (Keep a fallback path with normal loads for <sm80).\n\n9. Remove the old per-element main loop; the kernel now loops over tiles only. Tail handling: if the remaining elements < TILE_SIZE, each thread conditionally executes the load/compute/store for indices < N. Use if(globalIdx < N) guards.\n\n10. Keep template parameters \u2039scalar_t, DoAdd\u203a and reuse the existing specialised softsign + optional addition code inside the compute phase; only the memory staging portion changes. This preserves functional equivalence and keeps registers roughly the same (expected \u2264 34).\n\n11. Verify resource limits with nvcc \u2011Xptxas=-v. Static shared memory should report ~16384 B; registers should remain \u2264 34; spill_bytes must stay 0.\n\n12. Re-run NCU. Success criteria:  \n    \u2022 DynamicSharedMemoryPerBlock \u2248 0, StaticSharedMemoryPerBlock \u2248 8\u201316 KiB (> 0).  \n    \u2022 MemoryThroughput & DRAMThroughput drop from 88.4 GB/s.  \n    \u2022 L2CacheThroughput also falls (fewer DRAM transactions).  \n    \u2022 AchievedOccupancy stays > 70 %.  \n    \u2022 Kernel wall-time improves vs 7.69 ms baseline.\n\n13. Update the Python launcher: no interface change is needed, so existing softsign_cuda / softsign_add_cuda wrappers continue to work.\n\n14. Compile & unit-test on all four dtypes to ensure numerical correctness and that shared memory allocation does not exceed the device limit (query it via cudaDeviceProp if necessary).",
+    "status": "Failed (Performance Regression)",
+    "time_ms": 7.699251556396485,
+    "ptxas_metrics": {
+      "softsign_tile_kernel_fused<BFloat16>": {
+        "registers": 23,
+        "spill_bytes": 0,
+        "cmem_bytes": 384,
+        "smem_bytes": 0,
+        "type": "BFloat16",
+        "width": "Scalar"
+      },
+      "softsign_tile_kernel_fused<Half>": {
+        "registers": 23,
+        "spill_bytes": 0,
+        "cmem_bytes": 384,
+        "smem_bytes": 0,
+        "type": "Half(FP16)",
+        "width": "Scalar"
+      },
+      "softsign_tile_kernel_fused<double>": {
+        "registers": 32,
+        "spill_bytes": 0,
+        "cmem_bytes": 384,
+        "smem_bytes": 0,
+        "type": "double(FP64)",
+        "width": "Scalar"
+      },
+      "softsign_tile_kernel_fused<float>": {
+        "registers": 30,
+        "spill_bytes": 0,
+        "cmem_bytes": 384,
+        "smem_bytes": 0,
+        "type": "float(FP32)",
+        "width": "Scalar"
+      }
+    },
+    "all_ncu_metrics": {
+      "DRAMFrequency": 1510852906.92,
+      "SMFrequency": 1064039424.52,
+      "ElapsedCycles": 8038589.0,
+      "MemoryThroughput": 88.09,
+      "DRAMThroughput": 88.09,
+      "Duration": 7554400.0,
+      "L1TEXCacheThroughput": 39.84,
+      "L2CacheThroughput": 83.08,
+      "SMActiveCycles": 8030537.45,
+      "ComputeSMThroughput": 33.63,
+      "BlockSize": 256.0,
+      "GridSize": 65535.0,
+      "RegistersPerThread": 30.0,
+      "SharedMemoryConfigurationSize": 102400.0,
+      "DriverSharedMemoryPerBlock": 1024.0,
+      "DynamicSharedMemoryPerBlock": 8192.0,
+      "StaticSharedMemoryPerBlock": 0.0,
+      "Threads": 16776960.0,
+      "WavesPerSM": 75.85,
+      "BlockLimitSM": 32.0,
+      "BlockLimitRegisters": 8.0,
+      "BlockLimitSharedMem": 11.0,
+      "BlockLimitWarps": 8.0,
+      "TheoreticalActiveWarpsperSM": 64.0,
+      "TheoreticalOccupancy": 100.0,
+      "AchievedOccupancy": 99.48,
+      "AchievedActiveWarpsPerSM": 63.67
+    },
+    "selected_ncu_metrics": [
+      "MemoryThroughput",
+      "DRAMThroughput",
+      "L1TEXCacheThroughput",
+      "L2CacheThroughput",
+      "AchievedOccupancy"
+    ],
+    "details": "New time 7.699 ms is not better than best time 7.689 ms.",
+    "code": "import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\n# CUDA/C++ source --------------------------------------------------------------\nsource = r'''\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda_fp16.h>\n#include <cuda_bf16.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n#include <type_traits>\n#include <cstdint>\n\n// ================================================================\n// 128-bit vector traits\n// ------------------------------------------------\ntemplate<typename T> struct VecTraits;\n\ntemplate<> struct VecTraits<float>         { using VecT = float4;  static constexpr int kValues = 4; };\ntemplate<> struct VecTraits<double>        { using VecT = double2; static constexpr int kValues = 2; };\ntemplate<> struct VecTraits<__half>        { using VecT = uint4;   static constexpr int kValues = 8; };\ntemplate<> struct VecTraits<__nv_bfloat16> { using VecT = uint4;   static constexpr int kValues = 8; };\n\n// ================================================================\n// helpers\n// ------------------------------------------------\n__device__ __forceinline__ float bf16_to_float(__nv_bfloat16 v){\n    uint32_t tmp = static_cast<uint32_t>(\n        *reinterpret_cast<const unsigned short*>(&v)) << 16;\n    return __uint_as_float(tmp);\n}\n\n// -----------------------------------------------------------------------------\n// Safely construct zero for any scalar type (incl. half/bfloat16)\n// -----------------------------------------------------------------------------\ntemplate<typename T>\n__device__ __forceinline__ T make_zero(){ return T(0); }\n\ntemplate<>\n__device__ __forceinline__ __half make_zero<__half>(){ return __float2half(0.0f); }\n\ntemplate<>\n__device__ __forceinline__ __nv_bfloat16 make_zero<__nv_bfloat16>(){\n    return __float2bfloat16(0.0f);\n}\n\n// -----------------------------------------------------------------------------\n// Softsign (scalar) helpers\n// -----------------------------------------------------------------------------\ntemplate<typename scalar_t>\n__device__ __forceinline__ scalar_t softsign_scalar(scalar_t v){\n    scalar_t av = v >= scalar_t(0) ? v : -v;\n    return v / (scalar_t(1) + av);\n}\n\ntemplate<>\n__device__ __forceinline__ __half softsign_scalar(__half v){\n    float fv  = __half2float(v);\n    float res = fv / (1.f + fabsf(fv));\n    return __float2half(res);\n}\ntemplate<>\n__device__ __forceinline__ __nv_bfloat16 softsign_scalar(__nv_bfloat16 v){\n    float fv  = bf16_to_float(v);\n    float res = fv / (1.f + fabsf(fv));\n    return __float2bfloat16(res);\n}\n\n// dtype-specific add\ntemplate<typename T>\n__device__ __forceinline__ T add_op_scalar(T a, T b){ return a + b; }\ntemplate<>\n__device__ __forceinline__ __half add_op_scalar(__half a, __half b){ return __hadd(a,b); }\ntemplate<>\n__device__ __forceinline__ __nv_bfloat16 add_op_scalar(__nv_bfloat16 a, __nv_bfloat16 b){\n    return __hadd(a,b);\n}\n\n// ================================================================\n//  Tile-based kernel with shared-memory double buffering\n// ------------------------------------------------\ntemplate<typename scalar_t, bool DoAdd>\n__global__ void softsign_tile_kernel_fused(const scalar_t* __restrict__ a,\n                                           const scalar_t* __restrict__ b,   // can be nullptr\n                                           scalar_t*       __restrict__ y,\n                                           const size_t N){\n    using Traits          = VecTraits<scalar_t>;\n    using VecT            = typename Traits::VecT;\n    constexpr int VEC_ELEMS = Traits::kValues;\n\n    const int  THREADS        = blockDim.x;            // 256\n    const int  TILE_VECS      = THREADS;               // 1 vec per thread\n    const int  TILE_SIZE      = TILE_VECS * VEC_ELEMS; // elements per tile\n    const size_t num_vecs     = (N + VEC_ELEMS - 1) / VEC_ELEMS;\n\n    extern __shared__ char smem_raw[];\n    scalar_t* smem = reinterpret_cast<scalar_t*>(smem_raw);\n    scalar_t* smem_buf0 = smem;                 // [TILE_SIZE]\n    scalar_t* smem_buf1 = smem + TILE_SIZE;     // [TILE_SIZE]\n\n    const VecT* __restrict__ a_vec = reinterpret_cast<const VecT*>(a);\n    const VecT* __restrict__ b_vec = reinterpret_cast<const VecT*>(b);\n    VecT*       __restrict__ y_vec = reinterpret_cast<VecT*>(y);\n\n    size_t tile_base_vec   = blockIdx.x * TILE_VECS;   // vec index\n    size_t tile_stride_vec = gridDim.x * TILE_VECS;\n\n    int buf = 0;\n\n    for (size_t vec_base = tile_base_vec; vec_base < num_vecs;\n         vec_base += tile_stride_vec, buf ^= 1){\n\n        // ---------------------------------------------------------------------\n        // 1. LOAD --------------------------------------------------------------\n        // ---------------------------------------------------------------------\n        size_t vec_idx    = vec_base + threadIdx.x;     // vector index handled by this thread\n        size_t scalar_idx = vec_idx * VEC_ELEMS;        // scalar element index\n        scalar_t* dst_sh  = (buf ? smem_buf1 : smem_buf0) + threadIdx.x * VEC_ELEMS;\n\n        if (vec_idx < num_vecs){\n            VecT inA = a_vec[vec_idx];\n            scalar_t* inA_s = reinterpret_cast<scalar_t*>(&inA);\n\n            scalar_t local[VEC_ELEMS];\n\n            #pragma unroll\n            for (int k=0; k<VEC_ELEMS; ++k){\n                local[k] = inA_s[k];\n            }\n\n            if constexpr (DoAdd){\n                VecT inB        = b_vec[vec_idx];\n                scalar_t* inB_s = reinterpret_cast<scalar_t*>(&inB);\n                #pragma unroll\n                for (int k=0; k<VEC_ELEMS; ++k){\n                    local[k] = add_op_scalar<scalar_t>(local[k], inB_s[k]);\n                }\n            }\n\n            #pragma unroll\n            for (int k=0; k<VEC_ELEMS; ++k){\n                dst_sh[k] = local[k];\n            }\n        }else{\n            // out-of-range threads still write dummy to avoid bank conflicts\n            #pragma unroll\n            for (int k=0; k<VEC_ELEMS; ++k){\n                dst_sh[k] = make_zero<scalar_t>();\n            }\n        }\n\n        __syncthreads();\n\n        // ---------------------------------------------------------------------\n        // 2. COMPUTE Softsign --------------------------------------------------\n        // ---------------------------------------------------------------------\n        scalar_t* src_sh = (buf ? smem_buf1 : smem_buf0) + threadIdx.x * VEC_ELEMS;\n\n        #pragma unroll\n        for (int k=0; k<VEC_ELEMS; ++k){\n            src_sh[k] = softsign_scalar<scalar_t>(src_sh[k]);\n        }\n\n        __syncthreads();\n\n        // ---------------------------------------------------------------------\n        // 3. STORE -------------------------------------------------------------\n        // ---------------------------------------------------------------------\n        if (vec_idx < num_vecs){\n            VecT outV;\n            scalar_t* outV_s = reinterpret_cast<scalar_t*>(&outV);\n\n            #pragma unroll\n            for (int k=0; k<VEC_ELEMS; ++k){\n                outV_s[k] = src_sh[k];\n            }\n\n            if (scalar_idx + VEC_ELEMS <= N){\n                // full vector fits\n                y_vec[vec_idx] = outV;\n            }else{\n                // tail \u2013 store element-wise\n                scalar_t* y_scalar = reinterpret_cast<scalar_t*>(y);\n                #pragma unroll\n                for (int k=0; k<VEC_ELEMS; ++k){\n                    size_t gidx = scalar_idx + k;\n                    if (gidx < N) y_scalar[gidx] = outV_s[k];\n                }\n            }\n        }\n        __syncthreads();\n    }\n}\n\n// ================================================================\n//  Host API helpers\n// ------------------------------------------------\nnamespace {\n\n// launch helpers --------------------------------------------------------------\ntemplate<typename scalar_t>\nvoid launch_softsign(torch::Tensor a, torch::Tensor out){\n    constexpr int threads = 256;\n    using Traits = VecTraits<scalar_t>;\n    constexpr int VEC_ELEMS = Traits::kValues;\n\n    const size_t N      = a.numel();\n    const int    elems_per_block = threads * VEC_ELEMS;\n    const int    blocks = std::min<int>((N + elems_per_block - 1) / elems_per_block, 65535);\n\n    const size_t shmem_bytes = 2 * elems_per_block * sizeof(scalar_t);\n\n    auto stream = at::cuda::getCurrentCUDAStream();\n    softsign_tile_kernel_fused<scalar_t,false>\n        <<<blocks, threads, shmem_bytes, stream>>>(\n            reinterpret_cast<const scalar_t*>(a.data_ptr()),\n            nullptr,\n            reinterpret_cast<scalar_t*>(out.data_ptr()),\n            N);\n}\n\ntemplate<typename scalar_t>\nvoid launch_softsign_add(torch::Tensor a, torch::Tensor b, torch::Tensor out){\n    constexpr int threads = 256;\n    using Traits = VecTraits<scalar_t>;\n    constexpr int VEC_ELEMS = Traits::kValues;\n\n    const size_t N      = a.numel();\n    const int    elems_per_block = threads * VEC_ELEMS;\n    const int    blocks = std::min<int>((N + elems_per_block - 1) / elems_per_block, 65535);\n\n    const size_t shmem_bytes = 2 * elems_per_block * sizeof(scalar_t);\n\n    auto stream = at::cuda::getCurrentCUDAStream();\n    softsign_tile_kernel_fused<scalar_t,true>\n        <<<blocks, threads, shmem_bytes, stream>>>(\n            reinterpret_cast<const scalar_t*>(a.data_ptr()),\n            reinterpret_cast<const scalar_t*>(b.data_ptr()),\n            reinterpret_cast<scalar_t*>(out.data_ptr()),\n            N);\n}\n\n} // anonymous namespace\n\n// ================================================================\n//  Public C++ functions (exposed to Python)\n// ------------------------------------------------\ntorch::Tensor softsign_cuda(torch::Tensor x){\n    auto out = torch::empty_like(x);\n\n    switch (x.scalar_type()){\n        case torch::kFloat:    launch_softsign<float>(x,out);                      break;\n        case torch::kDouble:   launch_softsign<double>(x,out);                     break;\n        case torch::kHalf:     launch_softsign<__half>(x,out);                     break;\n        case torch::kBFloat16: launch_softsign<__nv_bfloat16>(x,out);              break;\n        default: AT_ERROR(\"softsign_cuda: unsupported dtype\");\n    }\n    return out;\n}\n\ntorch::Tensor softsign_add_cuda(torch::Tensor a, torch::Tensor b){\n    TORCH_CHECK(a.sizes() == b.sizes(), \"Tensors must have the same shape\");\n    auto out = torch::empty_like(a);\n\n    switch (a.scalar_type()){\n        case torch::kFloat:    launch_softsign_add<float>(a,b,out);                break;\n        case torch::kDouble:   launch_softsign_add<double>(a,b,out);               break;\n        case torch::kHalf:     launch_softsign_add<__half>(a,b,out);               break;\n        case torch::kBFloat16: launch_softsign_add<__nv_bfloat16>(a,b,out);        break;\n        default: AT_ERROR(\"softsign_add_cuda: unsupported dtype\");\n    }\n    return out;\n}\n'''\n\n# C++ declaration stubs --------------------------------------------------------\ncpp_src = r'''\ntorch::Tensor softsign_cuda(torch::Tensor x);\ntorch::Tensor softsign_add_cuda(torch::Tensor a, torch::Tensor b);\n'''\n\n# Build / load extension -------------------------------------------------------\nsoftsign_mod = load_inline(\n    name         = 'softsign_opt_tiled',\n    cpp_sources  = cpp_src,\n    cuda_sources = source,\n    functions    = ['softsign_cuda', 'softsign_add_cuda'],\n    with_cuda    = True,\n    verbose      = True,\n    extra_cuda_cflags=['-O3', '--ptxas-options=-v', '-std=c++17'],\n    extra_cflags=['-O3', '-std=c++17'],\n)\n\n# ----------------------------------------------------------------------------- \n# PyTorch Module wrapper\n# -----------------------------------------------------------------------------\nclass ModelNew(nn.Module):\n    def __init__(self):\n        super().__init__()\n        self.mod = softsign_mod\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.mod.softsign_cuda(x)"
+  },
+  {
+    "round": 4,
+    "goal": "Add an alignment-aware prologue/core/epilogue so the kernel scalar-processes a few elements until input/output pointers are VecT-aligned, then run a tight fully-aligned vectorized core loop (and detect when wider vectors are safe), finally handle the tail \u2014 ensuring all bulk global loads/stores are 16-byte-aligned (or wider) to minimize partial transactions and reduce DRAM throughput.",
+    "bottleneck_analysis": "High ncu_dram__bytes_read / MemoryThroughput = 88.4 (MemoryThroughput/DRAMThroughput = 88.4) with low ComputeSMThroughput = 23.27 and AchievedOccupancy = 97.05 indicates a clear global memory bandwidth bottleneck. PTXAS shows no spills and modest registers (26\u201334), so register pressure isn\u2019t the issue. L2 throughput = 83.45 and L1TEX = 26.53 show streaming traffic reaching L2/DRAM with little L1 reuse. The remaining excess DRAM traffic is likely due to inefficient memory transactions from unaligned or partial vector accesses (head/tail) despite vectorization, increasing the number of DRAM transactions and preventing full bytes-per-transaction efficiency.",
     "detailed_plan": "N/A",
     "status": "Failed (Tool)",
     "time_ms": null,
@@ -74,6 +322,19 @@
     "all_ncu_metrics": {},
     "selected_ncu_metrics": null,
     "details": "Tool Agent did not return a valid metric list.",
+    "code": null
+  },
+  {
+    "round": 5,
+    "goal": "N/A",
+    "bottleneck_analysis": "N/A",
+    "detailed_plan": "N/A",
+    "status": "Failed (Unknown)",
+    "time_ms": null,
+    "ptxas_metrics": {},
+    "all_ncu_metrics": {},
+    "selected_ncu_metrics": [],
+    "details": "",
     "code": null
   }
 ]

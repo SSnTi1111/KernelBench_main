@@ -1,0 +1,4 @@
+{
+  "problem_name": "1_57_conv_transposed_2D__square_input__square_kernel_test",
+  "pytorch_baseline_ms": 1.7646592712402345
+}

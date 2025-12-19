@@ -1,4 +1,4 @@
 {
   "problem_name": "1_30_Softsign",
-  "pytorch_baseline_ms": 25.92235595703125
+  "pytorch_baseline_ms": 25.9321435546875
 }

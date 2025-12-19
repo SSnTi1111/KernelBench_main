@@ -1,4 +1,5 @@
 
+
 import torch
 import torch.nn as nn
 import math
@@ -134,7 +135,7 @@ torch::Tensor conv_transpose2d_forward(
 
 # 编译扩展
 module = load_inline(
-    name="conv_transpose_opt_1766041255676",
+    name="conv_transpose_opt",
     cpp_sources=cpp_src,
     cuda_sources=source,
     functions=["conv_transpose2d_forward"],
@@ -176,4 +177,5 @@ class ModelNew(nn.Module):
             self.output_padding, 
             self.groups
         )
+                
             
