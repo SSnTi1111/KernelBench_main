@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+# import torch.cuda.nvtx as nvtx
 
 class Model(nn.Module):
     """
@@ -31,14 +32,21 @@ class Model(nn.Module):
         """
         return self.conv_transpose2d(x)
 
-# Test code
-batch_size = 8
-in_channels = 64  # double channels for heavier compute
+# # Test code
+# batch_size = 8
+# in_channels = 64  # double channels for heavier compute
+# out_channels = 64
+# kernel_size = 3
+# # larger square input
+# height = 1024
+# width = 1024
+batch_size = 4          # 原来是 8，减半
+in_channels = 64
 out_channels = 64
 kernel_size = 3
 # larger square input
-height = 1024
-width = 1024
+height = 512            # 原来是 1024 -> 显存占用降低到原来的 1/4
+width = 512
 
 def get_inputs():
     x = torch.rand(batch_size, in_channels, height, width)
@@ -46,3 +54,27 @@ def get_inputs():
 
 def get_init_inputs():
     return [in_channels, out_channels, kernel_size]  # Provide in_channels, out_channels, kernel_size for initialization
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+    torch.cuda.set_device(0)
+
+    model = Model(in_channels, out_channels, kernel_size).cuda()
+    x = torch.rand(batch_size, in_channels, height, width, device="cuda")
+
+    # warmup（非常重要，避免测到初始化 kernel）
+    for _ in range(5):
+        y = model(x)
+    torch.cuda.synchronize()
+
+    print("开始 Profiling...")
+    
+    # 1. 通知 NCU 开始采集
+    torch.cuda.cudart().cudaProfilerStart()
+
+    # 2. 执行模型
+    y = model(x)
+    torch.cuda.synchronize() # 加上同步是个好习惯，保证录制完整
+
+    # 3. 通知 NCU 停止采集
+    torch.cuda.cudart().cudaProfilerStop()

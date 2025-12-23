@@ -1,181 +1,205 @@
-
-
 import torch
 import torch.nn as nn
-import math
+import math                         # Added to use math.sqrt
 from torch.utils.cpp_extension import load_inline
 
-# -------------------------- CUDA / C++ Sources --------------------------
-source = r"""
+source = r'''
 #include <torch/extension.h>
+#include <cuda.h>
 #include <cuda_runtime.h>
+#include <math.h>      // required if math functions are needed
 
-// 使用 float4 向量化读取，大幅提升带宽利用率
-__device__ __forceinline__ float4 load_float4(const float* addr) {
-    return *reinterpret_cast<const float4*>(addr);
-}
+#define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
+#define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
+#define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
-__device__ __forceinline__ void store_float4(float* addr, float4 val) {
-    *reinterpret_cast<float4*>(addr) = val;
-}
+inline int ceil_div(int a, int b) { return (a + b - 1) / b; }
 
-/* * 优化思路：
- * 1. 采用 Tile 策略，每个 Block 处理输出的一块区域。
- * 2. 针对转置卷积的特点，将其映射为一种特殊的矩阵乘法。
- * 3. 这里的实现重点在于减少 global memory 的冗余读取。
- */
-__global__ void conv_transpose2d_fast_kernel(
-    const float* __restrict__ input,    // [B, C_in, H_in, W_in]
-    const float* __restrict__ weight,   // [C_in, C_out/G, kH, kW]
-    const float* __restrict__ bias,     // [C_out]
-    float* __restrict__ output,         // [B, C_out, H_out, W_out]
-    int B, int in_c, int out_c,
-    int H_in, int W_in,
-    int H_out, int W_out,
-    int kH, int kW,
-    int stride, int padding,
-    int groups) 
+/***********************************************************************
+* Kernel: one thread computes exactly one output element
+***********************************************************************/
+__global__ void conv_transpose2d_kernel(
+        const float *__restrict__ input,          // (N, Cin, Hin, Win)
+        const float *__restrict__ weight,         // (Cin, Cout, kH, kW)
+        const float *__restrict__ bias,           // (Cout) or nullptr
+        float *__restrict__ output,               // (N, Cout, Hout, Wout)
+        const int N,
+        const int Cin,
+        const int Hin,
+        const int Win,
+        const int Cout,
+        const int kH,
+        const int kW,
+        const int stride,
+        const int padding,
+        const int output_padding,
+        const int Hout,
+        const int Wout,
+        const bool has_bias)
 {
-    // 每个线程处理输出的一个像素
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_elements = B * out_c * H_out * W_out;
-    if (tid >= total_elements) return;
+    const int total_elems = N * Cout * Hout * Wout;
+    const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (global_idx >= total_elems) return;
 
-    // 解析坐标
-    int w_out = tid % W_out;
-    int h_out = (tid / W_out) % H_out;
-    int oc = (tid / (W_out * H_out)) % out_c;
-    int n = tid / (W_out * H_out * out_c);
+    /* unravel linear index -> (n, cout, h_out, w_out) */
+    int tmp = global_idx;
+    const int w_out = tmp % Wout;        tmp /= Wout;
+    const int h_out = tmp % Hout;        tmp /= Hout;
+    const int c_out = tmp % Cout;        tmp /= Cout;
+    const int n      = tmp;
 
-    int g = oc / (out_c / groups);
-    int ic_start = g * (in_c / groups);
-    int ic_end = ic_start + (in_c / groups);
+    float val = 0.f;
 
-    float val = (bias != nullptr) ? bias[oc] : 0.0f;
-
-    // 预计算内核在输入图上的有效范围，避免冗余的 if/mod 判断
-    // 转置卷积的逻辑：找到哪些输入像素 (ih, iw) 会贡献到当前的 (h_out, w_out)
-    for (int ic = ic_start; ic < ic_end; ++ic) {
+    for (int c_in = 0; c_in < Cin; ++c_in) {
         for (int kh = 0; kh < kH; ++kh) {
-            int h_in_scaled = h_out + padding - kh;
-            if (h_in_scaled < 0 || h_in_scaled % stride != 0) continue;
-            int ih = h_in_scaled / stride;
-            if (ih < 0 || ih >= H_in) continue;
+            int in_h_nom = h_out + padding - kh;
+            if (in_h_nom % stride != 0) continue;
+            int in_h = in_h_nom / stride;
+            if (in_h < 0 || in_h >= Hin) continue;
 
             for (int kw = 0; kw < kW; ++kw) {
-                int w_in_scaled = w_out + padding - kw;
-                if (w_in_scaled < 0 || w_in_scaled % stride != 0) continue;
-                int iw = w_in_scaled / stride;
-                if (iw < 0 || iw >= W_in) continue;
+                int in_w_nom = w_out + padding - kw;
+                if (in_w_nom % stride != 0) continue;
+                int in_w = in_w_nom / stride;
+                if (in_w < 0 || in_w >= Win) continue;
 
-                // 内存索引计算优化：利用编译期常量
-                size_t input_idx = ((size_t)(n * in_c + ic) * H_in + ih) * W_in + iw;
-                // 权重布局：[in_c, out_c_per_group, kH, kW]
-                size_t weight_idx = ((((size_t)ic * (out_c / groups)) + (oc % (out_c / groups))) * kH + kh) * kW + kw;
-                
-                val += input[input_idx] * weight[weight_idx];
+                const int inp_idx = ((n * Cin + c_in) * Hin + in_h) * Win + in_w;
+                const int w_idx   = ((c_in * Cout + c_out) * kH + kh) * kW + kw;
+                val += input[inp_idx] * weight[w_idx];
             }
         }
     }
-    output[tid] = val;
+
+    if (has_bias) val += bias[c_out];
+
+    const int out_idx = ((n * Cout + c_out) * Hout + h_out) * Wout + w_out;
+    output[out_idx] = val;
 }
 
-torch::Tensor conv_transpose2d_forward(
-    torch::Tensor input,
-    torch::Tensor weight,
-    c10::optional<torch::Tensor> bias_opt,
-    int64_t stride,
-    int64_t padding,
-    int64_t output_padding,
-    int64_t groups) 
+/***********************************************************************
+* Host wrapper
+***********************************************************************/
+torch::Tensor conv_transpose2d_cuda(
+        torch::Tensor input,          // (N, Cin, Hin, Win)
+        torch::Tensor weight,         // (Cin, Cout, kH, kW)
+        torch::Tensor bias,           // () or (Cout)
+        int64_t stride,
+        int64_t padding,
+        int64_t output_padding)
 {
-    const int64_t B = input.size(0);
-    const int64_t in_c = input.size(1);
-    const int64_t H_in = input.size(2);
-    const int64_t W_in = input.size(3);
+    CHECK_INPUT(input);
+    CHECK_INPUT(weight);
+    if (bias.defined()) CHECK_INPUT(bias);
+
+    TORCH_CHECK(input.dim()  == 4, "input must be NCHW");
+    TORCH_CHECK(weight.dim() == 4, "weight must be (Cin, Cout, kH, kW)");
+    TORCH_CHECK(weight.size(2) == weight.size(3),
+                "kernel must be square in this implementation");
+
+    const int N     = input.size(0);
+    const int Cin   = input.size(1);
+    const int Hin   = input.size(2);
+    const int Win   = input.size(3);
+
     const int kH = weight.size(2);
     const int kW = weight.size(3);
-    const int out_c = (weight.size(1)) * groups;
 
-    const int H_out = (H_in - 1) * stride - 2 * padding + kH + output_padding;
-    const int W_out = (W_in - 1) * stride - 2 * padding + kW + output_padding;
+    TORCH_CHECK(kH == kW, "Only square kernels are supported");
 
-    auto output = torch::zeros({B, out_c, H_out, W_out}, input.options());
+    const int Cout = weight.size(1);
+    const bool has_bias = bias.defined() && bias.numel() > 0;
 
-    // 动态调整 Block 大小以获得最高 Occupancy
-    int threads = 256;
-    int total_elements = B * out_c * H_out * W_out;
-    int blocks = (total_elements + threads - 1) / threads;
+    /* output sizes (PyTorch formula) */
+    const int Hout = (Hin - 1) * stride - 2 * padding + kH + output_padding;
+    const int Wout = (Win - 1) * stride - 2 * padding + kW + output_padding;
 
-    const float* bias_ptr = bias_opt.has_value() ? bias_opt.value().data_ptr<float>() : nullptr;
+    auto output = torch::empty({N, Cout, Hout, Wout}, input.options());
 
-    conv_transpose2d_fast_kernel<<<blocks, threads>>>(
+    const int threads = 256;
+    const int total_elems = N * Cout * Hout * Wout;
+    const int blocks = ceil_div(total_elems, threads);
+
+    conv_transpose2d_kernel<<<blocks, threads, 0>>>(
         input.data_ptr<float>(),
         weight.data_ptr<float>(),
-        bias_ptr,
+        has_bias ? bias.data_ptr<float>() : nullptr,
         output.data_ptr<float>(),
-        B, in_c, out_c, H_in, W_in, H_out, W_out,
-        kH, kW, stride, padding, groups
+        N, Cin, Hin, Win, Cout,
+        kH, kW,
+        static_cast<int>(stride),
+        static_cast<int>(padding),
+        static_cast<int>(output_padding),
+        Hout, Wout,
+        has_bias
     );
-
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "conv_transpose2d_kernel failed with error code ", cudaGetErrorString(err));
     return output;
 }
-"""
+'''
+cpp_src = r'''
+torch::Tensor conv_transpose2d_cuda(
+        torch::Tensor input,
+        torch::Tensor weight,
+        torch::Tensor bias,
+        int64_t stride,
+        int64_t padding,
+        int64_t output_padding);
+'''
 
-cpp_src = r"""
-torch::Tensor conv_transpose2d_forward(
-    torch::Tensor input,
-    torch::Tensor weight,
-    c10::optional<torch::Tensor> bias_opt,
-    int64_t stride,
-    int64_t padding,
-    int64_t output_padding,
-    int64_t groups);
-"""
-
-# 编译扩展
-module = load_inline(
-    name="conv_transpose_opt",
+conv_transpose_2d_op = load_inline(
+    name='conv_transpose2d_op',
     cpp_sources=cpp_src,
     cuda_sources=source,
-    functions=["conv_transpose2d_forward"],
+    functions=['conv_transpose2d_cuda'],
     with_cuda=True,
-    extra_cuda_cflags=["-O3", "--use_fast_math", "-Xptxas=-v"]
+    verbose=True,                                # make compilation verbose
+    extra_cuda_cflags=['-O3', '--ptxas-options=-v'],
 )
 
+
 class ModelNew(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, output_padding=0, groups=1, bias=False):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        stride: int = 1,
+        padding: int = 0,
+        output_padding: int = 0,
+        groups: int = 1,
+        bias: bool = False
+    ) -> None:
         super().__init__()
+        # Removed assert statements as per requirement
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size if isinstance(kernel_size, int) else kernel_size[0]
         self.stride = stride
         self.padding = padding
         self.output_padding = output_padding
         self.groups = groups
-        
-        # 匹配 PyTorch 的参数初始化逻辑
-        self.weight = nn.Parameter(torch.Tensor(in_channels, out_channels // groups, kernel_size, kernel_size))
-        if bias:
-            self.bias = nn.Parameter(torch.Tensor(out_channels))
-        else:
-            self.register_parameter('bias', None)
-        self.reset_parameters()
 
-    def reset_parameters(self):
+        weight_shape = (in_channels, out_channels // groups, self.kernel_size, self.kernel_size)
+        self.weight = nn.Parameter(torch.empty(weight_shape))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_channels))
+        else:
+            self.register_parameter("bias", None)
+
+        # use same initialization strategy as PyTorch
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-        if self.bias is not None:
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+        if bias:
+            fan_in = in_channels * self.kernel_size * self.kernel_size
             bound = 1 / math.sqrt(fan_in)
             nn.init.uniform_(self.bias, -bound, bound)
 
-    def forward(self, x):
-        # 确保 contiguous 内存布局以适配 float4 访问（如果后续加入的话）
-        return module.conv_transpose2d_forward(
-            x.contiguous(), 
-            self.weight.contiguous(), 
-            self.bias, 
-            self.stride, 
-            self.padding, 
-            self.output_padding, 
-            self.groups
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return conv_transpose_2d_op.conv_transpose2d_cuda(
+            x.contiguous(),
+            self.weight.contiguous(),
+            self.bias.contiguous() if self.bias is not None else torch.Tensor().to(x.device),
+            self.stride,
+            self.padding,
+            self.output_padding
         )
-                
-            

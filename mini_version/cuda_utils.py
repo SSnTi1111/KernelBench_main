@@ -171,15 +171,22 @@ try:
         sys.exit(1)
 
     torch.cuda.synchronize(device)
+
+    for _ in range(5):
+        model(*gpu_inputs)
+    torch.cuda.synchronize()
     
     # 5. 运行目标 (NCU 分析区域)
+    print("Start Profiling...")
     try:
+        torch.cuda.cudart().cudaProfilerStart()
         model(*gpu_inputs)
+        torch.cuda.synchronize(device)
+        torch.cuda.cudart().cudaProfilerStop()
     except Exception as e:
         print(f"Error: 模型执行失败: {e}", file=sys.stderr)
         sys.exit(1)
-        
-    torch.cuda.synchronize(device)
+    print("Stop Profiling.")
 
 except Exception as e:
     traceback.print_exc()
@@ -1268,14 +1275,42 @@ def parse_ptxas_info(log_str: str) -> Dict[str, Any]:
     return metrics
 
 
+def get_kernel_name(cuda_code_string):
+    """
+    从 CUDA 源代码字符串中解析出第一个 __global__ void 内核函数的名称。
+    
+    参数:
+        cuda_code_string (str): 包含 CUDA 源代码的字符串。
+    
+    返回:
+        str: 找到的内核函数名称。如果未找到，返回 None。
+    """
+    # 正则表达式解释：
+    # __global__  : 匹配 __global__ 关键字
+    # \s+         : 匹配一个或多个空格
+    # void        : 匹配 void 关键字
+    # \s+         : 匹配一个或多个空格
+    # ([a-zA-Z0-9_]+) : 捕获组，匹配内核名称（字母、数字、下划线）
+    # \s*\(       : 匹配零个或多个空格后跟左括号 (，标志着函数参数的开始
+    pattern = r"__global__\s+void\s+([a-zA-Z0-9_]+)\s*\("
+    
+    match = re.search(pattern, cuda_code_string)
+    
+    if match:
+        return match.group(1)
+    else:
+        return None
+
 # vvv --- [!!! 已更新 !!!] 真实 NCU 分析器 (现在是通用的) --- vvv
-def get_real_ncu_metrics(module_path, module_name, inputs, init_inputs=None) -> Dict[str, float]:
+def get_real_ncu_metrics(module_path, module_name, inputs, init_inputs=None, cuda_code=None) -> Dict[str, float]:
     """
     动态创建一个目标脚本，运行 ncu，解析 CSV 输出，并返回指标。
     [!!! 已更新 !!!] 接受通用输入和内核/wrapper 名称。
     """
+    kernel_name = get_kernel_name(cuda_code)
     ncu_metrics = {}
     target_script_path = f"_ncu_target_{module_name}.py"
+    temp_csv_path = f"_ncu_output_{module_name}.csv"
     
     try:
         # 1. 写入 ncu 目标脚本
@@ -1291,9 +1326,12 @@ def get_real_ncu_metrics(module_path, module_name, inputs, init_inputs=None) -> 
         ncu_command = [
             'ncu',
             '--csv',
+            '--profile-from-start', 'off',
             # '--kernel-name', kernel_name, # <--- [!!! 已删除 !!!]
-            '--launch-count', '1',
+            # '--launch-count', '1',
+            '--kernel-name',f'{kernel_name}',
             '--clock-control', 'none', # 避免 ncu 锁定频率
+            '--target-processes', 'all',
             'python', 
             target_script_path,
             module_path, 
@@ -1319,6 +1357,13 @@ def get_real_ncu_metrics(module_path, module_name, inputs, init_inputs=None) -> 
             print(f"警告：NCU 运行失败。返回码: {proc.returncode}", file=sys.stderr)
             print(f"NCU Stderr: {proc.stderr}", file=sys.stderr)
             return ncu_metrics
+
+        try:
+            with open(temp_csv_path, "w", encoding="utf-8") as debug_f:
+                debug_f.write(proc.stdout)
+            print(f"--- [DEBUG] NCU CSV 内容已保存至: {temp_csv_path} ---")
+        except Exception as e:
+            print(f"警告：保存调试 CSV 文件失败: {e}", file=sys.stderr)
 
         # 4. 解析 CSV 输出
         csv_reader = csv.reader(io.StringIO(proc.stdout))
@@ -1387,6 +1432,8 @@ def get_real_ncu_metrics(module_path, module_name, inputs, init_inputs=None) -> 
             os.remove("_ncu_inputs.pt")
         if os.path.exists("_ncu_init_inputs.pt"):
             os.remove("_ncu_init_inputs.pt")
+        if os.path.exists(temp_csv_path):
+            os.remove(temp_csv_path)
             
     print(f"--- [ NCU 指标已解析 (共 {len(ncu_metrics)} 个) ] ---")
     if ncu_metrics:

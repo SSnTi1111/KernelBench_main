@@ -191,7 +191,7 @@ def get_diverse_champions(history: list, current_best_code: str, num_kernels=2) 
 
     model = get_embedding_model()
     current_best_emb = None
-    similarity_threshold = 0.95 # 相似度阈值，大于此值视为“相同/太相似”
+    similarity_threshold = 0.98 # 相似度阈值，大于此值视为“相同/太相似”
 
     if model:
         try:
@@ -621,7 +621,8 @@ def run_optimization_on_problem(
                 # kernel_name,            
                 # wrapper_function_name,  
                 inputs,
-                init_inputs                  
+                init_inputs,
+                best_kernel_code_cuda                  
             )
             current_ncu_metrics = best_ncu_metrics # liuxitai:到这里目前已经改好了
             
@@ -833,6 +834,8 @@ def run_optimization_on_problem(
 
             #坏
             # new_kernel_code_full = '''import torch\nimport torch.nn as nn\nfrom torch.utils.cpp_extension import load_inline\n\nsource = r\'\'\'\n#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <cuda.h>\n#include <cuda_runtime.h>\n\ntemplate <typename scalar_t>\n__device__ __forceinline__ scalar_t sigmoid_func(scalar_t x) {\n    return scalar_t(1) / (scalar_t(1) + exp(-x));\n}\n\n// Kernel: element-wise Sigmoid\ntemplate <typename scalar_t>\n__global__ void sigmoid_kernel(const scalar_t* __restrict__ input,\n                               scalar_t* __restrict__ output,\n                               const int64_t numel) {\n    const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx < numel) {\n        scalar_t val = input[idx];\n        output[idx] = sigmoid_func(val);\n    }\n}\n\ntorch::Tensor sigmoid_forward(torch::Tensor input) {\n    TORCH_CHECK(input.is_cuda(), "Input must reside on CUDA device");\n    TORCH_CHECK(input.is_contiguous(), "Input must be contiguous");\n    auto output = torch::empty_like(input);\n\n    const int64_t numel = input.numel();\n    const int threads = 256;\n    const int64_t blocks = (numel + threads - 1) / threads;\n\n    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "sigmoid_forward_cuda", ([&] {\n        sigmoid_kernel<scalar_t><<<blocks, threads, 0,\n                                   at::cuda::getCurrentCUDAStream()>>>(\n            input.data_ptr<scalar_t>(),\n            output.data_ptr<scalar_t>(),\n            numel);\n    }));\n\n    cudaError_t err = cudaGetLastError();\n    TORCH_CHECK(err == cudaSuccess, "sigmoid_kernel launch failed with error code ", err);\n    return output;\n}\n\'\'\'\n\ncpp_src = r\'\'\'\ntorch::Tensor sigmoid_forward(torch::Tensor input);\n\'\'\'\n\nsigmoid_module = load_inline(\n    name=\'sigmoid_cuda\',\n    cpp_sources=cpp_src,\n    cuda_sources=source,\n    functions=[\'sigmoid_forward\'],\n    with_cuda=True,\n verbose=True,\n    extra_cuda_cflags=[\'-O2\',\'--ptxas-options=-v\']\n)\n\n\nclass ModelNew(nn.Module):\n    """\n    CUDA-accelerated model that applies element-wise Sigmoid.\n    Mirrors the original Model interface.\n    """\n    def __init__(self):\n        super(ModelNew, self).__init__()\n        self.sigmoid = sigmoid_module\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.sigmoid.sigmoid_forward(x)'''
+            
+            
             if not new_kernel_code_full: 
                 status, details = "Failed (Coder)", "Coder Agent did not produce valid code."
                 print(f"❌ {status} {details}")
@@ -966,7 +969,8 @@ def run_optimization_on_problem(
                 module.__file__, 
                 current_module_name, 
                 inputs,
-                init_inputs
+                init_inputs,
+                new_kernel_code_full
             )
             
             if new_time_ms < best_time_ms:

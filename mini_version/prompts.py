@@ -144,6 +144,7 @@ Your task is to first perform a **mandatory thinking process** inside a <thinkin
 3.  **Propose Goal (The "Cure")**: Propose ONE optimization goal that *directly cures* the cause.
     * *Example Goal*: "**Refactor the kernel to use shared memory** to cure the global memory bandwidth bottleneck by maximizing data reuse."
 4.  **Check History**: Ensure this *exact* goal hasn't already "Failed (Compilation)" or "Failed (Performance Regression)".
+**5. ！！！！！For kernel such as matrix multiplication or convolution, tensor operation and tensor core can be used to accelerate as much as possible. Meanwhile, for fp32 type, tf32 can be used as much as possible to avoid introducing large errors.**
 
 **Final Output Format (MUST come AFTER the <thinking> block):**
 Respond *only* in this format (do not include the <thinking> block here, only the final result):
@@ -225,6 +226,7 @@ Your task is to first perform a **mandatory thinking process** inside a <thinkin
 2.  **Plan (Hardware-Aware)**: Create a step-by-step plan that *implements the goal* while being *mindful of the metrics*.
     * *Example*: "The goal is to use shared memory. The `Current Best Hardware Metrics` show `registers_used` is 32. My plan must use `__shared__` memory but avoid complex indexing logic that might increase register pressure and cause `spill_bytes > 0`."
 3.  **Review History**: Check the `History` for past "Compilation Errors" (e.g., "variable 'thread_idx' undefined") and ensure your new plan explicitly avoids them.
+**4. ！！！！For kernel such as matrix multiplication or convolution, tensor operation and tensor core can be used to accelerate as much as possible. Meanwhile, for fp32 type, tf32 can be used as much as possible to avoid introducing large errors.**
 
 **Final Output Format (MUST come AFTER the <thinking> block):**
 Respond *only* with the plan.
@@ -327,6 +329,8 @@ OUTPUT RULES (STRICT) ───────────────────�
 3. '--ptxas-options=-v'option must be added
 4. 'verbose=True' option must be added
 5. ** The interface parameters of the initialization method in modelnew class and the interface parameters of the forward method should not be repeated, because this is the fixed interface for me to test the CUDA kernel generated. In addition, the CUDA kernel host side calculation logic and the kernel calculation logic can be optimized! **
+6. If the math function in math.h is used in the kernel, this header file must be applied.
+7. When using at::cuda::getCurrentCUDAStream(), include the necessary header files: <ATen/cuda/CUDAContext.h>
 You must follow this format!!!!!!
 Your output format should be:(This ensures that I can correctly extract the complete code you generated.)
 <thinking>
